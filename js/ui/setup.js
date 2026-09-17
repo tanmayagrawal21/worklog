@@ -22,6 +22,10 @@ export function welcomeDialog() {
         el('li', {}, el('strong', { text: 'The AI is optional, and you choose how much it sees.' }),
           ' Off entirely, running on your own machine, an open model in the cloud, or your own API key — and every change it proposes is yours to approve.')),
       el('p', { class: 'sub' }, 'Next you will point this at a data repo and paste a GitHub token. No repo yet? It can create one for you.'),
+      // An escape hatch for someone who would rather look before making a credential.
+      el('p', { class: 'sub' }, 'Not ready for that? ',
+        el('a', { href: '?demo=1', text: 'Look at a demo board first' }),
+        ' — sample data, no token, nothing saved.'),
     ),
     buttons: [{ label: 'Get started', class: 'primary', value: true }],
     dismissable: false,

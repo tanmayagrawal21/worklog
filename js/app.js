@@ -24,6 +24,7 @@ import { WikiView } from './ui/wiki.js';
 import { settingsDialog } from './ui/settings.js';
 import { resolveEndpoint, endpointProblem, PROVIDERS } from './providers.js';
 import { welcomeDialog, unlockDialog, offerScaffold } from './ui/setup.js';
+import { demoRepo } from './demo.js';
 
 const CONFIG_KEY = 'worklog.config.v1';
 
@@ -76,6 +77,8 @@ class App {
     this.loading = false;
     this.historyLoading = null;      // year being fetched on demand, if any
     this.migrating = false;          // a layout upgrade is in flight
+    this.demo = typeof location !== 'undefined'
+      && new URLSearchParams(location.search).has('demo');
 
     this.store = null;
     this.views = {
@@ -101,8 +104,13 @@ class App {
   /* ---------- panes ------------------------------------------------------- */
 
   restorePanes() {
-    const saved = (this.settings.panes || []).filter((id) => VIEWS.some(([v]) => v === id));
-    const panes = saved.length ? saved : ['board'];
+    // ?panes=board,summary,wiki wins over the saved layout, so a link can carry one.
+    const asked = typeof location !== 'undefined'
+      ? (new URLSearchParams(location.search).get('panes') || '').split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    const valid = (list) => list.filter((id) => VIEWS.some(([v]) => v === id));
+    const saved = valid(this.settings.panes || []);
+    const panes = valid(asked).length ? valid(asked) : saved.length ? saved : ['board'];
     return panes.slice(0, paneCapacity());
   }
 
@@ -175,6 +183,11 @@ class App {
     this.applyTheme();
     this.mount();
 
+    // ?demo=1 is the front door for someone who has not decided yet: a board to look
+    // at with no token, no repo and nothing saved. Checked before anything that could
+    // prompt, so the demo never asks for a credential.
+    if (this.demo) { await this.connectDemo(); return; }
+
     if (hasStoredTokens()) {
       const { tokens } = await unlockDialog();
       this.tokens = { github: tokens?.githubToken || null, ai: tokens?.aiTokens || {} };
@@ -188,6 +201,24 @@ class App {
     }
 
     await this.connect();
+  }
+
+  /**
+   * Load the invented board. No network, no token, and writes throw -- so the demo
+   * cannot quietly become a thing you lose work in.
+   */
+  async connectDemo() {
+    this.loading = true;
+    this.refresh();
+    try {
+      this.store = new Store(demoRepo({ appUrl: location.href.split('?')[0] }));
+      await this.store.load();
+    } catch (e) {
+      this.loadError = `Could not build the demo board: ${e.message}`;
+    } finally {
+      this.loading = false;
+      this.refresh();
+    }
   }
 
   /** Point at the configured repo, offering to set it up when it is not ready. */
@@ -388,14 +419,22 @@ class App {
     });
 
     add(this.header,
-      el('div', { class: 'brand' }, el('span', { class: `dot ${this.tokens.github ? '' : 'offline'}`, title: this.tokens.github ? 'Token loaded — you can publish' : 'Read-only: no GitHub token' }), 'Work Log'),
-      el('span', { class: 'repo-chip', title: slug }, priv ? el('span', { class: 'lock', text: '🔒 ' }) : null, slug),
+      el('div', { class: 'brand' }, el('span', {
+        class: `dot ${this.demo || this.tokens.github ? '' : 'offline'}`,
+        title: this.demo ? 'Demo: sample data, nothing saved'
+          : this.tokens.github ? 'Token loaded — you can publish' : 'Read-only: no GitHub token',
+      }), 'Work Log'),
+      this.demo
+        ? el('span', { class: 'repo-chip', title: 'Sample data. Nothing is saved and nothing is sent.' }, 'demo — nothing saved')
+        : el('span', { class: 'repo-chip', title: slug }, priv ? el('span', { class: 'lock', text: '🔒 ' }) : null, slug),
       this.aiChip(),
       el('span', { class: 'spacer' }),
       this.isOpen('board') ? search : null,
       this.hasPending ? el('span', { class: 'pending-badge', text: `${this.store.pending.length} unpublished` }) : null,
       this.hasPending ? el('button', { class: 'ghost', text: 'Discard', on: { click: () => this.discard() } }) : null,
-      el('button', { class: 'primary', text: 'Publish', disabled: !this.hasPending, on: { click: () => this.publish() } }),
+      this.demo
+        ? el('button', { class: 'primary', text: 'Set up mine', title: 'Point this at a repo of your own', on: { click: () => this.leaveDemo() } })
+        : el('button', { class: 'primary', text: 'Publish', disabled: !this.hasPending, on: { click: () => this.publish() } }),
       el('button', { text: '+ Task', disabled: !this.store, on: { click: () => newTaskDialog(this) } }),
       el('button', {
         class: 'icon ghost',
@@ -471,7 +510,7 @@ class App {
 
     if (this.loading) { this.main.append(el('div', { class: 'view-narrow' }, el('div', { class: 'card' }, spinner('Loading your log from GitHub…')))); return; }
 
-    if (!this.configured) {
+    if (!this.configured && !this.demo) {
       this.main.append(el('div', { class: 'view-narrow' }, el('div', { class: 'card' },
         el('h2', { text: 'No data repo yet' }),
         el('p', { class: 'sub', text: 'Point this at a GitHub repo to store your log. It can create one for you.' }),
@@ -491,11 +530,12 @@ class App {
       return;
     }
 
-    if (!this.tokens.github) {
+    if (!this.tokens.github && !this.demo) {
       this.main.append(el('div', { class: 'view-narrow', style: 'margin-bottom:14px' },
         notice('info', 'Read-only: no GitHub token loaded, so nothing can be published. Add one in Settings.')));
     }
 
+    if (this.demo) this.main.append(this.demoBanner());
     if (this.store?.needsMigration) this.main.append(this.migrationBanner());
 
     this.main.append(this.panesEl());
@@ -505,6 +545,32 @@ class App {
    * An older repo works as it is, so this says what the upgrade buys rather than
    * warning about a problem. It is offered once per session and never acts on its own.
    */
+  /**
+   * Say what this is, once, without covering the board. The point of the demo is to
+   * be obviously a demo: drag things, read the wiki, and know none of it is kept.
+   */
+  demoBanner() {
+    return el('div', { class: 'view-narrow', style: 'margin-bottom:14px' },
+      el('div', { class: 'card' },
+        el('h2', { text: 'This is a demo board' }),
+        el('p', { class: 'sub', text: 'A week of invented work, so you can see the thing before setting anything up. Drag cards, open the wiki, read the summary — nothing is saved, nothing is sent anywhere, and no token was asked for.' }),
+        el('div', { class: 'row', style: 'margin-top:12px' },
+          el('button', { class: 'primary', text: 'Set up my own log', on: { click: () => this.leaveDemo() } }),
+          el('span', { class: 'spacer' }),
+          el('a', { class: 'sub', href: 'https://github.com/tanmayagrawal21/worklog#readme', target: '_blank', rel: 'noopener', text: 'How it works' }))));
+  }
+
+  /** Leave the demo by reloading without ?demo, so no demo state can leak into a real board. */
+  async leaveDemo() {
+    const go = await confirm({
+      title: 'Set up your own log?',
+      body: el('p', { class: 'sub', text: 'This leaves the demo and starts the normal setup, which asks for a GitHub repo and a token. The sample board is discarded — it was never saved anywhere.' }),
+      confirmLabel: 'Continue',
+    });
+    if (!go) return;
+    location.href = location.href.split('?')[0];
+  }
+
   migrationBanner() {
     return el('div', { class: 'view-narrow', style: 'margin-bottom:14px' },
       el('div', { class: 'card' },
