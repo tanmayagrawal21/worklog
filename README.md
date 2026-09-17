@@ -169,9 +169,11 @@ Repos written by the earlier flat layout still load, and the app offers a one-co
 ./scripts/test.sh
 ```
 
-99 assertions across store, ai, dom, providers, and github — run under JavaScriptCore, which ships
-with macOS, so there are no dev dependencies either. Any ES-module runtime works:
-`JSC=$(which node) ./scripts/test.sh` needs `--experimental-vm-modules` on older Node.
+152 assertions across store, ai, time, providers, rules, dom, demo and github, plus 26 more that
+exercise the CLI — run under JavaScriptCore, which ships with macOS, so there are no dev
+dependencies either. Every suite is then re-run under `Pacific/Kiritimati` (UTC+14), `Pacific/Niue`
+(UTC-11) and `UTC`, because a local-date bug only shows up on one side of the line. Any ES-module
+runtime works: `JSC=$(which node) ./scripts/test.sh` needs `--experimental-vm-modules` on older Node.
 
 ## Where things are
 
@@ -186,6 +188,7 @@ with macOS, so there are no dev dependencies either. Any ES-module runtime works
 | [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, DOM helpers |
 | [js/webllm.js](js/webllm.js) | the in-browser WebGPU path |
 | [js/demo.js](js/demo.js) | the sample board behind `?demo=1`, read through the real Store |
+| [js/rules.js](js/rules.js) | the demo's keyword interpreter: stands in for a model when no provider is set |
 | [test/](test/) | headless suites and the JSC shim |
 | [scripts/](scripts/) | the test runner, and the CLI path for seeding a data repo |
 | [bin/worklog.mjs](bin/worklog.mjs) | the `npx work-log` static server: zero dependencies, ~150 lines |
