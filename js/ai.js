@@ -84,8 +84,39 @@ function explainHttp(status, body, ep) {
   return new AIError(`${who} returned ${status}: ${String(body).slice(0, 300)}`);
 }
 
-/** True when a 4xx looks like "this provider does not support that response_format". */
-const isFormatComplaint = (body) => /response_format|json_schema|schema|not supported|unsupported|invalid.*format/i.test(String(body));
+/**
+ * True when a 4xx is complaining about `response_format` specifically.
+ *
+ * Deliberately requires one of the format words to appear. An earlier version also
+ * matched a bare "unsupported", which made a gateway refusing `temperature` look like
+ * a schema complaint -- so the retry dropped the wrong knob three times and then gave
+ * up with a misleading message.
+ */
+const isFormatComplaint = (body) => /response_format|json_schema|json_object|structured output/i.test(String(body));
+
+/**
+ * Sampling knobs are a preference, not a requirement. Some gateways pin them: a
+ * LiteLLM proxy in front of a reasoning model answers `temperature=0.3` with
+ * "Only temperature=1 is supported". Dropping the param and asking again is better
+ * than failing the feature over a number we do not care much about.
+ */
+const DROPPABLE_PARAMS = ['temperature', 'top_p'];
+
+/**
+ * Which parameter a 4xx is refusing, if it is refusing one of ours.
+ * Returns 'max_tokens' too, which is not droppable but is sometimes just renamed.
+ */
+export function refusedParam(body) {
+  const s = String(body);
+  if (!/unsupported|not support|unrecognized|unrecognised|unknown|unexpected|invalid|only .* is supported/i.test(s)) return null;
+  for (const p of [...DROPPABLE_PARAMS, 'max_tokens']) {
+    if (new RegExp(`\\b${p}\\b`).test(s)) return p;
+  }
+  return null;
+}
+
+/** OpenAI's reasoning models renamed max_tokens; the error body says so when they did. */
+const wantsMaxCompletionTokens = (body) => /max_completion_tokens/.test(String(body));
 
 /**
  * One chat completion, degrading response_format until the endpoint accepts it.
@@ -108,7 +139,10 @@ async function chat(ep, messages, { schema = null, maxTokens = 1600, temperature
   if (!ep.baseUrl) throw new AIError('No AI endpoint configured. Choose a provider in Settings.');
   if (ep.needsToken && !ep.token) throw new AIError(`No API key set for ${ep.label}. Add one in Settings to use AI features.`);
 
-  const attempts = schema
+  // Two independent things an endpoint may refuse: the response format, and the
+  // parameters. Both are negotiated down in the same loop rather than failing --
+  // the point is to get an answer from whatever the user actually pointed us at.
+  const formats = schema
     ? [
       { type: 'json_schema', json_schema: { name: schema.name, schema: schema.schema, strict: true } },
       { type: 'json_object' },
@@ -116,14 +150,21 @@ async function chat(ep, messages, { schema = null, maxTokens = 1600, temperature
     ]
     : [null];
 
+  const dropped = new Set();
+  let tokensKey = 'max_tokens';
+  let fi = 0;
   let lastErr;
-  for (const response_format of attempts) {
+
+  // Bounded: each pass either advances the format or drops a param, both finite.
+  for (let guard = 0; guard < formats.length + DROPPABLE_PARAMS.length + 2; guard++) {
+    if (fi >= formats.length) break;
+
     const body = {
       model: ep.model,
       messages,
-      max_tokens: maxTokens,
-      temperature,
-      ...(response_format ? { response_format } : {}),
+      [tokensKey]: maxTokens,
+      ...(dropped.has('temperature') ? {} : { temperature }),
+      ...(formats[fi] ? { response_format: formats[fi] } : {}),
     };
 
     let res;
@@ -151,8 +192,21 @@ async function chat(ep, messages, { schema = null, maxTokens = 1600, temperature
 
     const text = await res.text();
     lastErr = explainHttp(res.status, text, ep);
-    // Only a format complaint is worth degrading for; anything else is terminal.
-    if (!(res.status >= 400 && res.status < 500 && isFormatComplaint(text))) throw lastErr;
+    if (!(res.status >= 400 && res.status < 500)) throw lastErr;
+
+    const bad = refusedParam(text);
+    if (bad === 'max_tokens' && tokensKey === 'max_tokens' && wantsMaxCompletionTokens(text)) {
+      tokensKey = 'max_completion_tokens';
+      continue;
+    }
+    if (bad && DROPPABLE_PARAMS.includes(bad) && !dropped.has(bad)) {
+      dropped.add(bad);
+      continue;
+    }
+    // Param complaints are checked first on purpose: they are the specific reading of
+    // a body that mentions both, and the format ladder is the blunter instrument.
+    if (isFormatComplaint(text)) { fi++; continue; }
+    throw lastErr;
   }
   throw lastErr;
 }

@@ -6,8 +6,8 @@
  * (sanitiseOperations, parseJSONLoose), and what becomes an event (opsToEvents).
  */
 import './shim.js';
-import { check, eq, ok, report } from './shim.js';
-import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent } from '../js/ai.js';
+import { check, checkAsync, eq, ok, report } from './shim.js';
+import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise } from '../js/ai.js';
 import { foldEvents } from '../js/store.js';
 
 const task = (over = {}) => ({
@@ -179,5 +179,58 @@ check('a summary becomes an event that folds back into state', () => {
   eq(summaries['2026-09-17'].evening.headline, 'Parser fixed');
   eq(summaries['2026-09-17'].evening.model, 'openai/gpt-oss-120b');
 });
+
+console.log('--- negotiating with a fussy endpoint ---');
+
+// The verbatim body a LiteLLM proxy returns in front of a model whose temperature is
+// pinned. It says "Unsupported" AND names the param, which is exactly what made the
+// older format-degrade heuristic misread it as a schema complaint.
+const LITELLM_400 = JSON.stringify({
+  error: {
+    message: 'litellm.UnsupportedParamsError: us.anthropic.claude-sonnet-5 does not support temperature=0.3. Only temperature=1 is supported. To drop unsupported params, set `litellm.drop_params = True`.. Received Model Group=ai2s-claude-sonnet-5',
+    type: 'invalid_request_error',
+  },
+});
+
+check('a refused sampling param is recognised as such, not as a schema complaint', () => {
+  eq(refusedParam(LITELLM_400), 'temperature');
+  eq(refusedParam('{"message":"Unsupported value: max_tokens. Use max_completion_tokens instead."}'), 'max_tokens');
+  eq(refusedParam('{"message":"response_format json_schema is not supported here"}'), null,
+    'a pure format complaint must not read as a param complaint');
+  eq(refusedParam('{"message":"rate limited, slow down"}'), null);
+});
+
+await checkAsync('a pinned temperature is dropped and the request retried', async () => {
+  const sent = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    sent.push(body);
+    if ('temperature' in body) return { ok: false, status: 400, async text() { return LITELLM_400; } };
+    return {
+      ok: true,
+      async json() {
+        return { choices: [{ message: { content: JSON.stringify({
+          headline: 'One thing moved', bullets: [{ text: 'moved it', taskIds: [] }], risks: [], next: [],
+        }) } }] };
+      },
+    };
+  };
+  try {
+    const out = await summarise({
+      endpoint: { kind: 'http', baseUrl: 'https://proxy.example/v1', model: 'ai2s-claude-sonnet-5', label: 'Custom endpoint', needsToken: false, token: null, headers: {} },
+      tasks: [task()],
+      events: [],
+    });
+    eq(out.headline, 'One thing moved', 'the feature must survive a pinned param');
+    eq(sent.length, 2, 'exactly one retry: drop the param, ask again');
+    eq(sent[0].response_format?.type, 'json_schema');
+    eq(sent[1].response_format?.type, 'json_schema', 'the format must NOT be degraded over a param complaint');
+    ok(!('temperature' in sent[1]), 'the offending param is the only thing that changed');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 
 quit(report('ai.js'));
