@@ -1,5 +1,11 @@
 /**
- * app.js — the shell: state, view switching, and the publish gate.
+ * app.js — the shell: state, panes, and the publish gate.
+ *
+ * Layout: the views are panes, not tabs. On a wide screen you can have the board,
+ * the brain dump, the summary and the wiki open beside each other, which is the
+ * arrangement the daily loop actually wants — read the summary, type what happened,
+ * watch the board change. Capacity is derived from the window width, so the same
+ * code degrades to one pane on a phone without a separate mobile path.
  *
  * The one rule worth stating twice: every edit in this app stages an event locally,
  * and only publish() contacts the user's repo. The publish dialog shows the literal
@@ -14,26 +20,57 @@ import { el, add, clear, dialog, confirm, toast, notice, spinner, plural } from 
 import { BoardView, newTaskDialog } from './ui/board.js';
 import { BraindumpView } from './ui/braindump.js';
 import { SummaryView } from './ui/summary.js';
+import { WikiView } from './ui/wiki.js';
 import { settingsDialog } from './ui/settings.js';
+import { resolveEndpoint, endpointProblem, PROVIDERS } from './providers.js';
 import { welcomeDialog, unlockDialog, offerScaffold } from './ui/setup.js';
 
 const CONFIG_KEY = 'worklog.config.v1';
 
 const DEFAULTS = {
   owner: '', repo: '', branch: 'main',
-  model: 'openai/gpt-oss-120b:fastest',
+  // 'none' by default on purpose: until you choose a provider, this app sends your
+  // work log to exactly one place -- your own repo.
+  provider: 'none',
+  baseUrl: '',
+  model: '',
+  modelByProvider: {},
+  providerByMode: {},
+  advancedEndpoint: false,
   sendNotes: true,
   theme: 'auto',
+  panes: ['board'],
 };
+
+const VIEWS = Object.freeze([
+  ['board', 'Board'],
+  ['braindump', 'Brain dump'],
+  ['summary', 'Summary'],
+  ['wiki', 'Wiki'],
+]);
+
+/**
+ * How many panes fit. Thresholds come from the panes themselves: a board column is
+ * ~235px and prose stops being readable much under 380px, so anything narrower than
+ * these would be worse side by side than stacked.
+ */
+function paneCapacity() {
+  const w = typeof window === 'undefined' ? 1200 : window.innerWidth;
+  if (w < 900) return 1;
+  if (w < 1300) return 2;
+  if (w < 1750) return 3;
+  return 4;
+}
 
 class App {
   constructor() {
     this.settings = { ...DEFAULTS, ...readJSON(CONFIG_KEY) };
-    this.tokens = { github: null, hf: null };
+    this.tokens = { github: null, ai: {} };
     this.passphrase = null;
-    this.models = null;
     this.search = '';
-    this.view = 'board';
+    this.panes = this.restorePanes();
+    this.focus = this.panes[0];
+    this.capacity = paneCapacity();
     this.repoInfo = null;
     this.loadError = null;
     this.loading = false;
@@ -43,7 +80,69 @@ class App {
       board: new BoardView(this),
       braindump: new BraindumpView(this),
       summary: new SummaryView(this),
+      wiki: new WikiView(this),
     };
+
+    // Re-render only when the number of panes that fit actually changes, so dragging
+    // a window edge does not rebuild the DOM on every pixel.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', () => {
+        const next = paneCapacity();
+        if (next === this.capacity) return;
+        this.capacity = next;
+        this.trimPanes();
+        this.refresh();
+      });
+    }
+  }
+
+  /* ---------- panes ------------------------------------------------------- */
+
+  restorePanes() {
+    const saved = (this.settings.panes || []).filter((id) => VIEWS.some(([v]) => v === id));
+    const panes = saved.length ? saved : ['board'];
+    return panes.slice(0, paneCapacity());
+  }
+
+  isOpen(id) { return this.panes.includes(id); }
+
+  /** Drop the least recently focused panes until the rest fit. */
+  trimPanes() {
+    while (this.panes.length > this.capacity) {
+      const victim = this.panes.find((id) => id !== this.focus) ?? this.panes[0];
+      this.panes = this.panes.filter((id) => id !== victim);
+    }
+    if (!this.panes.includes(this.focus)) this.focus = this.panes[0];
+  }
+
+  openPane(id) {
+    if (!this.isOpen(id)) {
+      this.panes = [...this.panes, id];
+      this.focus = id;
+      this.trimPanes();
+      this.persistPanes();
+    } else {
+      this.focus = id;
+    }
+  }
+
+  closePane(id) {
+    if (this.panes.length === 1) return;          // always leave something on screen
+    this.panes = this.panes.filter((p) => p !== id);
+    if (this.focus === id) this.focus = this.panes[0];
+    this.persistPanes();
+  }
+
+  /** Nav click: with room to spare it toggles a pane; at capacity 1 it swaps. */
+  togglePane(id) {
+    if (this.capacity === 1) { this.panes = [id]; this.focus = id; this.persistPanes(); }
+    else if (this.isOpen(id) && this.panes.length > 1) this.closePane(id);
+    else this.openPane(id);
+    this.refresh();
+  }
+
+  persistPanes() {
+    this.saveSettings({ panes: this.panes });
   }
 
   /* ---------- derived state used by the views -------------------------- */
@@ -63,6 +162,11 @@ class App {
   get hasPending() { return !!this.store?.hasPending; }
   get configured() { return !!(this.settings.owner && this.settings.repo); }
 
+  /** Where AI requests go, resolved fresh so a settings change takes effect at once. */
+  get endpoint() { return resolveEndpoint(this.settings, this.tokens.ai); }
+
+  get aiEnabled() { return !endpointProblem(this.endpoint); }
+
   /* ---------- lifecycle ------------------------------------------------- */
 
   async start() {
@@ -71,7 +175,7 @@ class App {
 
     if (hasStoredTokens()) {
       const { tokens } = await unlockDialog();
-      this.tokens = { github: tokens?.githubToken || null, hf: tokens?.hfToken || null };
+      this.tokens = { github: tokens?.githubToken || null, ai: tokens?.aiTokens || {} };
       this.passphrase = null;
     }
 
@@ -205,10 +309,15 @@ class App {
 
   /* ---------- navigation ------------------------------------------------ */
 
-  go(view) { this.view = view; this.refresh(); }
+  /** Make sure a view is on screen and focused. Used by cross-view links. */
+  go(view) {
+    this.openPane(view);
+    this.refresh();
+  }
 
   reveal(taskId) {
-    this.view = 'board';
+    this.openPane('board');
+    this.refresh();
     this.views.board.reveal(taskId);
   }
 
@@ -258,8 +367,9 @@ class App {
     add(this.header,
       el('div', { class: 'brand' }, el('span', { class: `dot ${this.tokens.github ? '' : 'offline'}`, title: this.tokens.github ? 'Token loaded — you can publish' : 'Read-only: no GitHub token' }), 'Work Log'),
       el('span', { class: 'repo-chip', title: slug }, priv ? el('span', { class: 'lock', text: '🔒 ' }) : null, slug),
+      this.aiChip(),
       el('span', { class: 'spacer' }),
-      this.view === 'board' ? search : null,
+      this.isOpen('board') ? search : null,
       this.hasPending ? el('span', { class: 'pending-badge', text: `${this.store.pending.length} unpublished` }) : null,
       this.hasPending ? el('button', { class: 'ghost', text: 'Discard', on: { click: () => this.discard() } }) : null,
       el('button', { class: 'primary', text: 'Publish', disabled: !this.hasPending, on: { click: () => this.publish() } }),
@@ -280,16 +390,56 @@ class App {
     );
   }
 
+  /**
+   * Says where AI requests go, at a glance. Worth a permanent spot in the header:
+   * "is my work log leaving this machine" should never require opening a dialog.
+   */
+  aiChip() {
+    const p = PROVIDERS[this.settings.provider] || {};
+    const mode = p.mode || 'off';
+    const text = mode === 'off' ? 'AI off' : mode === 'local' ? 'AI: local' : `AI: ${p.label.split(' (')[0]}`;
+    const title = mode === 'off'
+      ? 'No model configured — nothing is sent anywhere but your repo.'
+      : mode === 'local'
+        ? `${p.label} — task data stays on this machine.`
+        : `${p.label} — task titles (and notes, unless you turn that off) are sent there.`;
+    return el('button', {
+      class: `ai-chip mode-${mode}`,
+      text,
+      title,
+      on: {
+        click: async () => {
+          const r = await settingsDialog(this);
+          if (r === 'repo-changed') await this.connect(); else this.refresh();
+        },
+      },
+    });
+  }
+
   renderNav() {
     clear(this.nav);
     const counts = { board: this.tasks.length };
-    for (const [id, label] of [['board', 'Board'], ['braindump', 'Brain dump'], ['summary', 'Summary']]) {
+
+    for (const [id, label] of VIEWS) {
+      const open = this.isOpen(id);
       this.nav.append(el('button', {
         role: 'tab',
-        'aria-selected': String(this.view === id),
+        'aria-selected': String(open),
+        class: open ? 'open' : '',
+        title: this.capacity === 1
+          ? label
+          : open
+            ? (this.panes.length > 1 ? `Close the ${label} pane` : `${label} — the only pane open`)
+            : `Open ${label} beside the others`,
         text: counts[id] != null ? `${label} (${counts[id]})` : label,
-        on: { click: () => this.go(id) },
+        on: { click: () => this.togglePane(id) },
       }));
+    }
+
+    // Only worth saying once someone has the room to act on it.
+    if (this.capacity > 1) {
+      this.nav.append(el('span', { class: 'spacer' }),
+        el('span', { class: 'nav-hint', text: `${plural(this.capacity, 'pane')} fit — click to open side by side` }));
     }
   }
 
@@ -323,7 +473,40 @@ class App {
         notice('info', 'Read-only: no GitHub token loaded, so nothing can be published. Add one in Settings.')));
     }
 
-    this.main.append(this.views[this.view].render());
+    this.main.append(this.panesEl());
+  }
+
+  /** The panes themselves. One element per open view, in the order they were opened. */
+  panesEl() {
+    const wrap = el('div', { class: `panes count-${this.panes.length}` });
+
+    for (const id of this.panes) {
+      const label = VIEWS.find(([v]) => v === id)?.[1] || id;
+      const pane = el('section', {
+        class: `pane${this.focus === id ? ' focused' : ''}`,
+        'aria-label': label,
+        on: { focusin: () => { this.focus = id; } },
+      });
+
+      // A single pane needs no chrome; more than one, and you need to know which is
+      // which and how to get rid of one.
+      if (this.panes.length > 1) {
+        pane.append(el('div', { class: 'pane-head' },
+          el('span', { class: 'pane-title', text: label }),
+          el('span', { class: 'spacer' }),
+          el('button', {
+            class: 'icon ghost',
+            text: '×',
+            title: `Close ${label}`,
+            'aria-label': `Close ${label}`,
+            on: { click: () => { this.closePane(id); this.refresh(); } },
+          })));
+      }
+
+      pane.append(this.views[id].render());
+      wrap.append(pane);
+    }
+    return wrap;
   }
 }
 
