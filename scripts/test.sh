@@ -19,4 +19,15 @@ fail=0
 for t in test/*.test.js; do
   "$JSC" -m "$t" || fail=1
 done
+
+# bin/worklog.mjs is the one file that imports node:*, which jsc cannot resolve. Copy it
+# next to the stubs with those specifiers rewritten, and expose its internals to the
+# checks; the shipped file stays free of test hooks. See test/node-stubs/README.md.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cp test/node-stubs/stub-*.mjs "$tmp/"
+sed -E "s#from 'node:([a-z_]+)'#from './stub-\1.mjs'#" bin/worklog.mjs > "$tmp/cli.mjs"
+printf '\nglobalThis.__probe = { parseArgs, resolveFile, server, TYPES };\n' >> "$tmp/cli.mjs"
+"$JSC" -m test/cli.check.js -- "$tmp/cli.mjs" || fail=1
+
 exit $fail

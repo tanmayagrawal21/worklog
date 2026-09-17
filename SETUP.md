@@ -103,6 +103,25 @@ before creating anything. If the repo already holds a log it stops rather than g
 open the app and point it at the repo instead. It never touches tokens — you still paste one into
 the app.
 
+## Running it on your own machine instead
+
+Three ways in, and they are interchangeable — the app is the same code and your log is the same
+repo, so you can switch whenever:
+
+| | How | When it fits |
+| --- | --- | --- |
+| Hosted | open the link | you just want to use it |
+| npm | `npx work-log` | you have Node and want a pinned version, or a local AI server |
+| Clone | `git clone …` then `python3 -m http.server 8000` | you want to change the app |
+
+`npx work-log` serves the package's own files on `http://127.0.0.1:8765` and opens a browser.
+`--demo` opens the sample board, `--no-open` just prints the URL, `--port` and `--host` do what you
+would expect (`--host 0.0.0.0` if you want to reach it from a phone on the same network).
+
+One reason to prefer local: a page served over `https://` cannot call an `http://localhost` model
+server, so the Ollama / LM Studio tier needs either the CORS setup described above or an app served
+over plain HTTP — which is what this gives you.
+
 ## Hosting your own copy of the app
 
 The hosted link is convenient but it is someone else's Pages site. To own the whole thing: use the

@@ -20,6 +20,10 @@ scratch/
 *.token
 secrets.json
 
-# This is a zero-build project (no bundler, no package manager) — if a dependency
-# ever creeps in, keep its install tree out of git.
+# There is a package.json so `npx work-log` can serve the app, but it declares no
+# dependencies -- an install tree here means something crept in. Keep it, and any
+# local `npm pack` tarball, out of git.
 node_modules/
+*.tgz
+npm-debug.log*
+package-lock.json

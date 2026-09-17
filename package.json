@@ -1,0 +1,49 @@
+{
+  "name": "work-log",
+  "version": "0.1.0",
+  "description": "A JIRA-style board for your own work, backed by an append-only event log in a git repo you own. No build step, no server, no database.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Tanmay Agrawal",
+  "keywords": [
+    "worklog",
+    "kanban",
+    "standup",
+    "journal",
+    "changelog",
+    "event-sourcing",
+    "github-pages",
+    "static-site",
+    "zero-dependency"
+  ],
+  "homepage": "https://tanmayagrawal21.github.io/worklog/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanmayagrawal21/worklog.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tanmayagrawal21/worklog/issues"
+  },
+  "bin": {
+    "work-log": "bin/worklog.mjs"
+  },
+  "scripts": {
+    "start": "node bin/worklog.mjs",
+    "test": "./scripts/test.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "css/",
+    "docs/",
+    "js/",
+    "scripts/setup.sh",
+    "scripts/scaffold.mjs",
+    "index.html",
+    "SETUP.md"
+  ],
+  "dependencies": {},
+  "sideEffects": false
+}

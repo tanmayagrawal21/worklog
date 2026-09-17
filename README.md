@@ -113,7 +113,20 @@ python3 -m http.server 8000
 ```
 
 It must be served over HTTP rather than opened as a `file://` URL, because it loads ES modules.
-Any static server does — `npx serve`, `caddy file-server`, whatever you have.
+Any static server does — `caddy file-server`, `npx serve`, whatever you have.
+
+If you have Node and would rather not clone anything, the same app is on npm:
+
+```sh
+npx work-log          # serves it and opens a browser
+npx work-log --demo   # the sample board, no token, nothing saved
+```
+
+That is a static file server over the package's own directory and nothing else — no build, no
+dependencies, no telemetry, nothing written outside your data repo. `npx work-log --help` lists the
+handful of flags (`--port`, `--host`, `--no-open`). Useful if you want a pinned version, or if your
+laptop is where you'd rather the AI keys live; note that a browser will not reach a `localhost`
+inference server *from* a `https://` page, so the local-model tier is easier this way round.
 
 ## How your data repo is laid out
 
@@ -165,6 +178,7 @@ with macOS, so there are no dev dependencies either. Any ES-module runtime works
 | [js/demo.js](js/demo.js) | the sample board behind `?demo=1`, read through the real Store |
 | [test/](test/) | headless suites and the JSC shim |
 | [scripts/](scripts/) | the test runner, and the CLI path for seeding a data repo |
+| [bin/worklog.mjs](bin/worklog.mjs) | the `npx work-log` static server: zero dependencies, ~150 lines |
 
 Model output is treated as untrusted: `sanitiseOperations` drops hallucinated task ids, bad enums,
 and no-op edits before anything reaches the board. All UI text goes through `textContent` — there is
