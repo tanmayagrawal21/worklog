@@ -143,6 +143,19 @@ label { display: block; font-weight: 500; margin-bottom: 4px; }
 .row > * { flex: 1 1 140px; min-width: 0; }
 .check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
 .check input { width: auto; margin-top: 2px; flex: none; }
+/* Marks the option we think most people should take, next to its label. */
+.pill-rec {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--good-soft);
+  color: var(--good);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  vertical-align: 1px;
+}
 
 /* ---------- layout ------------------------------------------------------- */
 
@@ -352,7 +365,9 @@ dialog .dlg-foot {
 }
 dialog .dlg-foot .spacer { flex: 1 1 auto; }
 
-pre.commit-preview {
+/* Same treatment for anything shown verbatim before it is sent or committed. */
+pre.commit-preview,
+pre.payload {
   font-family: var(--mono);
   font-size: 12px;
   background: var(--surface-2);

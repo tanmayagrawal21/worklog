@@ -11,6 +11,7 @@ import { todayISO } from '../store.js';
 import { summarise, summaryEvent, AIError } from '../ai.js';
 import { endpointProblem } from '../providers.js';
 import { el, clear, notice, spinner, toast, shortTime } from './dom.js';
+import { confirmCloudSend } from './consent.js';
 
 export class SummaryView {
   constructor(app) {
@@ -107,6 +108,14 @@ export class SummaryView {
     const endpoint = this.app.endpoint;
     const problem = endpointProblem(endpoint);
     if (problem) { this.error = problem; this.app.refresh(); return; }
+
+    // No free text here, so this only discloses the board payload -- but it is still
+    // the first thing that leaves, and the count of what leaves is worth seeing once.
+    if (!await confirmCloudSend({
+      endpoint,
+      tasks: this.app.tasks,
+      includeNotes: this.app.settings.sendNotes,
+    })) return;
 
     this.busy = kind;
     this.error = null;

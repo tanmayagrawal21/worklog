@@ -17,6 +17,7 @@ import { listModels, suggestedFor } from '../ai.js';
 import { MODES, PROVIDERS, DEFAULT_PROVIDER, providersInMode, modeOf, resolveEndpoint } from '../providers.js';
 import { hasWebGPU, preloadBrowserModel, unloadBrowserModel } from '../webllm.js';
 import { saveTokens, clearTokens, passphraseStrength, hasStoredTokens, isLocked } from '../vault.js';
+import { forgetConsent } from './consent.js';
 import { el, add, clear, dialog, confirm, toast, notice } from './dom.js';
 
 const MASK = '••••••••••••••••';
@@ -189,8 +190,13 @@ export function settingsDialog(app) {
   advanced.addEventListener('change', () => { cfg.advancedEndpoint = advanced.checked; applyProvider(); });
 
   /* --- passphrase lock --- */
-  const lock = el('input', { type: 'checkbox', checked: isLocked() });
-  const pass = el('input', { type: 'password', placeholder: 'passphrase', autocomplete: 'new-password', disabled: !isLocked() });
+  // Ticked by default for anyone who has not stored tokens yet. A token in plain
+  // localStorage is readable by devtools and by anything else running on this origin,
+  // so the lock is the right default and an unlocked store should be a choice someone
+  // made rather than one they never saw. Already decided? Their setting stands.
+  const lockDefault = hasStoredTokens() ? isLocked() : true;
+  const lock = el('input', { type: 'checkbox', checked: lockDefault });
+  const pass = el('input', { type: 'password', placeholder: 'passphrase', autocomplete: 'new-password', disabled: !lockDefault });
   const strength = el('div', { class: 'hint' });
   lock.addEventListener('change', () => { pass.disabled = !lock.checked; strength.textContent = ''; });
   pass.addEventListener('input', () => {
@@ -223,10 +229,14 @@ export function settingsDialog(app) {
           el('a', { href: 'https://github.com/settings/tokens/new?scopes=repo', target: '_blank', rel: 'noopener', text: 'classic token' }),
           ' with the ', el('code', { text: 'repo' }), ' scope. Fine-grained tokens only reach repos that already exist, so they cannot create one.'))),
 
+    hasStoredTokens() && !isLocked()
+      ? notice('warn', 'Your tokens are stored unlocked, so anything with access to this browser profile can read them. Ticking the lock below encrypts them at rest.')
+      : null,
     el('div', { class: 'field' },
       el('label', { class: 'check' }, lock,
         el('span', {}, el('strong', { text: 'Lock tokens with a passphrase' }),
-          el('div', { class: 'hint', text: 'Encrypts them at rest in this browser, so a stray look at devtools does not expose them. You will be asked for it each time the app loads.' }))),
+          el('span', { class: 'pill-rec', text: 'Recommended' }),
+          el('div', { class: 'hint', text: 'Encrypts them at rest in this browser (PBKDF2-SHA256 into AES-GCM), so a stray look at devtools does not expose them. One prompt each time the app loads. Untick it if this is a machine only you use and the prompt is not worth it.' }))),
       pass, strength),
 
     el('h3', { style: 'margin-top:18px', text: 'AI' }),
@@ -258,6 +268,9 @@ export function settingsDialog(app) {
           click: async () => {
             if (!await confirm({ title: 'Forget stored tokens?', body: 'You will need to paste them again to publish or use AI. Your data in the repo is untouched.', confirmLabel: 'Forget them', danger: true })) return;
             clearTokens();
+            // The consent record is about those keys. Keeping it would silently
+            // re-authorise the next key pasted for the same provider.
+            forgetConsent();
             app.tokens = { github: null, ai: {} };
             toast('Tokens removed from this browser.');
           },
@@ -276,12 +289,6 @@ export function settingsDialog(app) {
         label: 'Save',
         class: 'primary',
         onClick: async () => {
-          if (lock.checked && !pass.disabled && pass.value) {
-            const s = passphraseStrength(pass.value);
-            if (!s.acceptable) { toast('Choose a stronger passphrase.', 'error'); return undefined; }
-          }
-          if (lock.checked && !isLocked() && !pass.value) { toast('Enter a passphrase, or untick the lock.', 'error'); return undefined; }
-
           const pid = currentProvider;
           if (PROVIDERS[pid].custom && !baseUrl.value.trim()) { toast('A custom provider needs an endpoint URL.', 'error'); return undefined; }
 
@@ -293,8 +300,18 @@ export function settingsDialog(app) {
           }
 
           const tokens = { github: gh.value.trim() || app.tokens.github, ai };
-          const passphrase = lock.checked ? (pass.value || app.passphrase) : null;
-          if (lock.checked && !passphrase) { toast('Enter the passphrase to keep the lock on.', 'error'); return undefined; }
+          // The lock is ticked by default, which must not turn "save my repo name"
+          // into "invent a passphrase first". Nothing stored yet means nothing to
+          // protect, so the tick is a standing preference and not a blocker.
+          const anySecret = !!(tokens.github || Object.values(ai).some(Boolean));
+          const wantLock = lock.checked && anySecret;
+
+          if (wantLock && pass.value) {
+            const s = passphraseStrength(pass.value);
+            if (!s.acceptable) { toast('Choose a stronger passphrase.', 'error'); return undefined; }
+          }
+          const passphrase = wantLock ? (pass.value || app.passphrase) : null;
+          if (wantLock && !passphrase) { toast('Enter a passphrase, or untick the lock.', 'error'); return undefined; }
 
           await saveTokens({ githubToken: tokens.github, aiTokens: ai }, passphrase);
           app.tokens = tokens;

@@ -9,6 +9,7 @@ import { statusLabel } from '../store.js';
 import { proposeOperations, opsToEvents, AIError } from '../ai.js';
 import { endpointProblem } from '../providers.js';
 import { el, clear, notice, spinner, toast, plural } from './dom.js';
+import { confirmCloudSend, cloudHint } from './consent.js';
 
 const PLACEHOLDER = `Finished the retry logic and pushed it for review.
 Started looking at the flaky integration test — it only fails on CI, still digging.
@@ -51,7 +52,7 @@ export class BraindumpView {
       el('p', { class: 'sub' }, 'Write it however you like. The AI turns it into board changes and ',
         el('strong', { text: 'shows you each one before anything is applied' }), '.'),
       this.app.onRules ? notice('info', 'This is the demo interpreter: keyword rules in this page, not a model. It matches lines to tasks and guesses at status changes, which is enough to show the review step — a real provider reads your update far better. Nothing typed here leaves the page.') : null,
-      el('div', { class: 'field', style: 'margin-top:12px' }, input),
+      el('div', { class: 'field', style: 'margin-top:12px' }, input, cloudHint(this.app.endpoint)),
       this.error ? notice('error', this.error) : null,
       el('div', { class: 'row', style: 'justify-content:flex-end' },
         el('span', { class: 'spacer' }),
@@ -67,6 +68,15 @@ export class BraindumpView {
     const endpoint = this.app.endpoint;
     const problem = endpointProblem(endpoint);
     if (problem) { this.error = problem; this.app.refresh(); return; }
+
+    // Before the first request to a cloud provider, show what is about to leave --
+    // including this text verbatim, since it is the one part no filter can protect.
+    if (!await confirmCloudSend({
+      endpoint,
+      tasks: this.app.tasks,
+      includeNotes: this.app.settings.sendNotes,
+      text: this.text,
+    })) return;
 
     this.busy = true;
     this.error = null;

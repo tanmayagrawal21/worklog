@@ -55,8 +55,13 @@ to your own repo and nowhere else.
 | **A commercial or custom API** | OpenAI, Anthropic, Google, OpenRouter, or any OpenAI-compatible endpoint | task titles (see below) |
 
 For the two cloud tiers: any task you flag **private** is never included in a request, and a
-global *"titles only, never notes"* toggle withholds note text from every request. Requests
-negotiate down through `json_schema` → `json_object` → plain prompting, and drop sampling
+global *"titles only, never notes"* toggle withholds note text from every request. The brain-dump
+box is the exception, and it is one worth knowing about — it is free text, so nothing can filter it
+on your behalf. Before the **first** request to any cloud provider the app shows you what is about
+to leave: the URL, the model, how many tasks and notes, how many private tasks were held back, and
+your update verbatim. You can say no, and changing provider or endpoint URL asks again.
+
+Requests negotiate down through `json_schema` → `json_object` → plain prompting, and drop sampling
 parameters an endpoint rejects, so gateways with narrow parameter support still work.
 
 ## Privacy model
@@ -65,9 +70,9 @@ parameters an endpoint rejects, so gateways with narrow parameter support still 
   server-side — not client-side encryption. The app reads and writes it with *your* token.
 - **This app repo is public and holds no data.** Pages on a Free plan cannot serve a private repo,
   so the app is public; nothing of yours is in it.
-- **Tokens never leave your browser.** They live in `localStorage`, never in any commit, and can be
-  locked behind a passphrase (PBKDF2-SHA256, 600k iterations → AES-GCM). AI keys are stored per
-  provider.
+- **Tokens never leave your browser.** They live in `localStorage`, never in any commit, and are
+  locked behind a passphrase by default (PBKDF2-SHA256, 600k iterations → AES-GCM) — one prompt per
+  load, and you can untick it on a machine only you use. AI keys are stored per provider.
 - **You approve every push.** No write to your repo happens without the preview dialog first.
 
 Caveats worth reading before you trust it with anything sensitive:
@@ -75,7 +80,8 @@ Caveats worth reading before you trust it with anything sensitive:
 1. Task JSON is **plain text** in your repo. That is deliberate — it's what makes `git diff`
    readable — but a private repo later flipped to public exposes its entire history.
 2. On the cloud tiers, board content reaches a third-party inference provider. The `private` flag
-   and the notes toggle are the mitigations; they are in Settings, not buried.
+   and the notes toggle are the mitigations, and they are in Settings, not buried — but they filter
+   the *board*, not the brain-dump box, which is why that first request is shown to you in full.
 3. The passphrase lock uses PBKDF2 rather than Argon2id because that is what WebCrypto offers. The
    iteration count is stored with the record so it can be raised later.
 
@@ -169,7 +175,7 @@ Repos written by the earlier flat layout still load, and the app offers a one-co
 ./scripts/test.sh
 ```
 
-152 assertions across store, ai, time, providers, rules, dom, demo and github, plus 26 more that
+172 assertions across store, ai, time, providers, rules, consent, dom, demo and github, plus 26 more that
 exercise the CLI — run under JavaScriptCore, which ships with macOS, so there are no dev
 dependencies either. Every suite is then re-run under `Pacific/Kiritimati` (UTC+14), `Pacific/Niue`
 (UTC-11) and `UTC`, because a local-date bug only shows up on one side of the line. Any ES-module
@@ -185,7 +191,7 @@ runtime works: `JSC=$(which node) ./scripts/test.sh` needs `--experimental-vm-mo
 | [js/providers.js](js/providers.js) | the provider catalogue behind the four tiers |
 | [js/vault.js](js/vault.js) | token storage and the optional passphrase lock |
 | [js/bootstrap.js](js/bootstrap.js) | inspecting a repo and scaffolding a new one |
-| [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, DOM helpers |
+| [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, the cloud-disclosure gate, DOM helpers |
 | [js/webllm.js](js/webllm.js) | the in-browser WebGPU path |
 | [js/demo.js](js/demo.js) | the sample board behind `?demo=1`, read through the real Store |
 | [js/rules.js](js/rules.js) | the demo's keyword interpreter: stands in for a model when no provider is set |
