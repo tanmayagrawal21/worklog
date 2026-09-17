@@ -153,6 +153,12 @@ so one change is one added line in `git log -p`, and files stay under GitHub's 2
 limit for decades. Boot reads the manifest, the snapshot, and about three months — not every month
 you have ever logged, so year five opens as fast as week one.
 
+**Dates are yours, timestamps are UTC.** Every event stores a UTC instant, because that is the only
+thing two machines agree on and the only thing that sorts. But the day a piece of work belongs to is
+your local one: day headings, month filing and the times in the rendered pages are all local, and
+each month page says which offset it was generated in. Otherwise an evening in Tucson lands on
+tomorrow, which is where this started.
+
 Repos written by the earlier flat layout still load, and the app offers a one-commit upgrade
 (behind the same preview-and-confirm gate as any other push).
 

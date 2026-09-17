@@ -20,6 +20,19 @@ for t in test/*.test.js; do
   "$JSC" -m "$t" || fail=1
 done
 
+# Calendar dates are local (see js/store.js localDate), so a suite that passes here has
+# only been checked in this machine's zone. Re-run everything at the extremes and in UTC
+# -- UTC being where a UTC-derived date looks correct, which is how the bug survived.
+for tz in Pacific/Kiritimati Pacific/Niue UTC; do
+  for t in test/*.test.js; do
+    if ! out="$(TZ="$tz" "$JSC" -m "$t" 2>&1)"; then
+      printf '%s\n' "--- FAILED under TZ=$tz: $t" "$out"
+      fail=1
+    fi
+  done
+done
+[ "$fail" = 0 ] && echo "zones:    every suite also passes under Pacific/Kiritimati (UTC+14), Pacific/Niue (UTC-11) and UTC"
+
 # bin/worklog.mjs is the one file that imports node:*, which jsc cannot resolve. Copy it
 # next to the stubs with those specifiers rewritten, and expose its internals to the
 # checks; the shipped file stays free of test hooks. See test/node-stubs/README.md.

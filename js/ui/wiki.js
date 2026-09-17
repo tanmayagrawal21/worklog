@@ -15,7 +15,7 @@
  * connected record instead of isolated scribbles. Nothing here writes; "Open on the
  * board" hands you back to the editable view.
  */
-import { STATUSES, statusLabel } from '../store.js';
+import { STATUSES, statusLabel, localDate } from '../store.js';
 import { el, add, clear, plural, shortTime, age } from './dom.js';
 
 const TASK_REF = /\[\[(T-[0-9a-z]{6})\]\]|\b(T-[0-9a-z]{6})\b/g;
@@ -102,7 +102,8 @@ export class WikiView {
   dayIndex() {
     const days = new Map();
     for (const e of this.app.state.events) {
-      const d = e.ts.slice(0, 10);
+      // Local date, so an evening's work is filed under the evening you did it.
+      const d = localDate(e.ts);
       days.set(d, (days.get(d) || 0) + 1);
     }
     const list = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
@@ -191,9 +192,9 @@ export class WikiView {
         fact('Status', statusLabel(t.status)),
         fact('Priority', t.priority),
         fact('Id', t.id),
-        fact('Created', t.created.slice(0, 10)),
+        fact('Created', localDate(t.created)),
         fact('Last touched', age(t.updated)),
-        t.done ? fact('Finished', t.done.slice(0, 10)) : null,
+        t.done ? fact('Finished', localDate(t.done)) : null,
         t.private ? fact('Privacy', 'Never sent to AI') : null),
       t.tags.length ? el('div', { class: 'tag-cloud' }, t.tags.map((g) => el('button', {
         class: 'tag wiki-link', text: g, on: { click: () => this.go('tags', g) },
@@ -202,14 +203,14 @@ export class WikiView {
       el('div', { class: 'section-label', text: `Notes (${t.noteCount || t.notes.length})` }),
       t.notes.length
         ? el('div', {}, t.notes.map((n) => el('div', { class: 'wiki-note' },
-          el('div', { class: 'wiki-meta', text: `${n.ts.slice(0, 10)} ${shortTime(n.ts)}` }),
+          el('div', { class: 'wiki-meta', text: `${localDate(n.ts)} ${shortTime(n.ts)}` }),
           el('div', {}, this.linkify(n.text)))))
         : el('p', { class: 'sub', text: 'None yet. Notes written on the board show up here as a timeline.' }),
       this.trimmedNotesHint(t),
 
       el('div', { class: 'section-label', text: 'History' }),
       el('ul', { class: 'wiki-list' }, history.map((e) => el('li', {},
-        el('span', { class: 'wiki-meta', text: `${e.ts.slice(0, 10)} ` }), describeForWiki(e)))),
+        el('span', { class: 'wiki-meta', text: `${localDate(e.ts)} ` }), describeForWiki(e)))),
 
       related.length ? el('div', {},
         el('div', { class: 'section-label', text: 'Related by tag' }),
@@ -231,7 +232,7 @@ export class WikiView {
 
   dayPage(back) {
     const date = this.selected;
-    const events = this.app.state.events.filter((e) => e.ts.startsWith(date));
+    const events = this.app.state.events.filter((e) => localDate(e.ts) === date);
     const summaries = this.app.state.summaries[date] || {};
 
     return el('div', { class: 'card wiki-article' },

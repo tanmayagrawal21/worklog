@@ -21,7 +21,7 @@
  * `private` are never included, and notes can be withheld globally.
  */
 
-import { makeEvent, newTaskId } from './store.js';
+import { makeEvent, newTaskId, todayISO, localDate, localTime } from './store.js';
 import { PROVIDERS, DEFAULT_PROVIDER } from './providers.js';
 import { browserChat, listBrowserModels } from './webllm.js';
 
@@ -308,7 +308,7 @@ export async function proposeOperations({ endpoint, tasks, text, includeNotes = 
   if (!text || !text.trim()) throw new AIError('Nothing to interpret — write an update first.');
 
   const user = [
-    `Today is ${new Date().toISOString().slice(0, 10)}.`,
+    `Today is ${todayISO()} (the engineer's local date).`,
     '',
     'Current board:',
     JSON.stringify(boardPayload(tasks, { includeNotes }), null, 1),
@@ -420,31 +420,59 @@ Style:
 - risks: only genuine blockers or slippage. Empty array if none.
 - next: at most three suggestions, grounded in what is in flight or blocked.`;
 
+/** How far back a morning summary looks. Long enough to notice a stall, short enough to read. */
+const MORNING_DAYS = 7;
+
+/**
+ * Which events a summary is allowed to describe.
+ *
+ * The split matters and used to be wrong. An evening summary is about today, so it
+ * reads today. A morning summary is written before the day has happened -- reading
+ * today's events would make it describe work you have not done yet, and on the first
+ * run of a new day there are none anyway. So morning reads the days BEFORE today, and
+ * the day boundary is the local one (see store.localDate).
+ */
+export function summaryWindow(events, kind, { today = todayISO(), days = MORNING_DAYS } = {}) {
+  const evs = (events || []).filter((e) => e.type !== 'summary.set');
+  if (kind === 'morning') {
+    const from = localDate(new Date(`${today}T12:00:00`).getTime() - days * 86400000);
+    return evs.filter((e) => { const d = localDate(e.ts); return d < today && d >= from; });
+  }
+  return evs.filter((e) => localDate(e.ts) === today);
+}
+
 /**
  * Generate a summary.
  * @param {'morning'|'evening'} kind morning reports standing state; evening reports what moved.
  */
 export async function summarise({ endpoint, tasks, events, kind = 'evening', previous = null, includeNotes = true, onProgress }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const priv = new Set(tasks.filter((t) => t.private).map((t) => t.id));
 
-  const todays = (events || [])
-    .filter((e) => e.ts.slice(0, 10) === today && e.type !== 'summary.set' && !priv.has(e.taskId))
-    .map((e) => ({ at: e.ts.slice(11, 16), type: e.type, taskId: e.taskId, ...(e.to ? { to: e.to } : {}), ...(includeNotes && e.text ? { text: e.text } : {}) }));
+  const window = summaryWindow(events, kind, { today })
+    .filter((e) => !priv.has(e.taskId))
+    .map((e) => ({
+      on: localDate(e.ts), at: localTime(e.ts), type: e.type, taskId: e.taskId,
+      ...(e.to ? { to: e.to } : {}), ...(includeNotes && e.text ? { text: e.text } : {}),
+    }));
 
   const focus = kind === 'morning'
-    ? 'Report where things STAND: what is in flight, what is blocked, what is stale. Suggest a focus for today.'
+    ? 'Report where things STAND at the start of today: what is in flight, what is blocked, what has gone stale. Suggest a focus for today. The events below are from BEFORE today — today has not happened yet, so do not describe it as if it had.'
     : 'Report what MOVED today, based on the events. Call out anything that stalled.';
 
+  const label = kind === 'morning'
+    ? `Events from the ${MORNING_DAYS} days before today (${window.length})`
+    : `Events logged today (${window.length})`;
+
   const user = [
-    `Today is ${today}. This is the ${kind} summary.`,
+    `Today is ${today} (the engineer's local date; times below are local too). This is the ${kind} summary.`,
     focus,
     '',
     'Board:',
     JSON.stringify(boardPayload(tasks, { includeNotes }), null, 1),
     '',
-    `Events logged today (${todays.length}):`,
-    todays.length ? JSON.stringify(todays, null, 1) : '(none yet)',
+    `${label}:`,
+    window.length ? JSON.stringify(window, null, 1) : '(none)',
     ...(previous?.headline ? ['', `Previous summary said: ${previous.headline}`] : []),
   ].join('\n');
 

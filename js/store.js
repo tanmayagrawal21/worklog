@@ -70,9 +70,45 @@ export const SCHEMA = 2;
 
 /* ---------- small helpers ------------------------------------------------ */
 
-export const todayISO = () => new Date().toISOString().slice(0, 10);
+/**
+ * Calendar dates are local; timestamps stay UTC.
+ *
+ * Every event carries a UTC instant, because that is the only thing two machines can
+ * agree on and the only thing that sorts correctly. But "which day was this" is a
+ * question about the person, not about UTC: in Tucson (UTC-7) an update typed at 6pm
+ * is already tomorrow in UTC, which filed evening work under the wrong date
+ * everywhere it mattered -- the day pages, the summaries, the month a change lands
+ * in. So the instant is stored as-is and everything that groups or displays a date
+ * comes through here.
+ */
+const p2 = (n) => String(n).padStart(2, '0');
+export const localDate = (at = Date.now()) => {
+  const d = at instanceof Date ? at : new Date(at);
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+};
+/** HH:MM in the reader's own timezone, for anything a person reads. */
+export const localTime = (at) => {
+  const d = at instanceof Date ? at : new Date(at);
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+};
+export const todayISO = () => localDate();
+
+/** "UTC-07:00" — stamped onto generated pages, since the times on them are local. */
+export function tzLabel(at = Date.now()) {
+  const mins = -(at instanceof Date ? at : new Date(at)).getTimezoneOffset();
+  const sign = mins < 0 ? '-' : '+';
+  return `UTC${sign}${p2(Math.floor(Math.abs(mins) / 60))}:${p2(Math.abs(mins) % 60)}`;
+}
+
 const monthOf = (iso) => iso.slice(0, 7);
 const yearOf = (iso) => iso.slice(0, 4);
+/**
+ * Which month file an event belongs to: the month of its local date, not of its UTC
+ * timestamp. Filing by UTC would split a single evening across two month pages, which
+ * is exactly the seam this change exists to remove. See touchedMonths() for what that
+ * costs at a month boundary.
+ */
+const monthOfEvent = (e) => monthOf(localDate(e.ts));
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
@@ -292,7 +328,7 @@ function buildCommitMessage(events, tasks) {
 const groupByDay = (events) => {
   const byDay = new Map();
   for (const e of sortEvents(events)) {
-    const d = e.ts.slice(0, 10);
+    const d = localDate(e.ts);
     if (!byDay.has(d)) byDay.set(d, []);
     byDay.get(d).push(e);
   }
@@ -316,7 +352,8 @@ export function renderMonthMd(month, events, tasks) {
     `[All years](../../../${PATHS.changelog}) · [${year}](README.md) · [Current board](../../BOARD.md) · [Raw events](${mm}.json)`,
     '',
     `_Generated from the event log. ${days.length} day${days.length === 1 ? '' : 's'} logged, `
-      + `${events.length} change${events.length === 1 ? '' : 's'}. Newest first._`,
+      + `${events.length} change${events.length === 1 ? '' : 's'}. Newest first. `
+      + `Dates and times are local (${tzLabel()}); ${mm}.json keeps the UTC timestamps._`,
     '',
   ];
 
@@ -341,7 +378,7 @@ export function renderMonthMd(month, events, tasks) {
       out.push('| Time | Change |', '| --- | --- |');
       for (const e of rest) {
         // Escape pipes so a note containing "|" cannot break the table.
-        out.push(`| ${e.ts.slice(11, 16)} | ${describeEvent(e, tasks).replace(/\|/g, '\\|')} |`);
+        out.push(`| ${localTime(e.ts)} | ${describeEvent(e, tasks).replace(/\|/g, '\\|')} |`);
       }
       out.push('');
     }
@@ -493,10 +530,10 @@ export function renderBoardMd(tasks) {
       const bits = [`\`${t.id}\``];
       if (t.priority && t.priority !== 'normal') bits.push(t.priority);
       if (t.tags?.length) bits.push(t.tags.map((g) => `#${g}`).join(' '));
-      bits.push(`updated ${String(t.updated).slice(0, 10)}`);
+      bits.push(`updated ${localDate(t.updated)}`);
       out.push(`- **${String(t.title).replace(/\n/g, ' ')}** · ${bits.join(' · ')}`);
       const last = t.notes?.[t.notes.length - 1];
-      if (last) out.push(`  - _${String(last.ts).slice(0, 10)}_: ${String(last.text).replace(/\n/g, ' ')}`);
+      if (last) out.push(`  - _${localDate(last.ts)}_: ${String(last.text).replace(/\n/g, ' ')}`);
     }
     if (s.id === 'done' && total > DONE_SHOWN) {
       out.push('', `_…and ${total - DONE_SHOWN} more finished earlier. See [the changelog](../${PATHS.changelog})._`);
@@ -645,9 +682,36 @@ export class Store {
 
   get hasPending() { return this.pending.length > 0; }
 
-  /** Months our staged events belong to — the only month files a push may rewrite. */
+  /**
+   * Months our staged events belong to — the only month files a push may rewrite.
+   *
+   * Closed over boundary events, and that closure is load-bearing. Events are filed by
+   * local month, but an evening near a month boundary has a UTC timestamp in the
+   * neighbouring month, and commits written before that rule filed it there. Rewriting
+   * one file of such a pair without the other would either duplicate the event or --
+   * worse -- write it out of the file it was in and into none at all. So if either
+   * month of a boundary event is being rewritten, both are.
+   */
   get touchedMonths() {
-    return [...new Set(this.pending.map((e) => monthOf(e.ts)))].sort();
+    const months = new Set(this.pending.map(monthOfEvent));
+    // Only published events can be misfiled: a staged one has never been written
+    // anywhere, so its UTC month has nothing in it to move and rewriting that file
+    // would just create an empty one next month.
+    const straddling = this.remoteEvents
+      .map((e) => [monthOf(e.ts), monthOfEvent(e)])
+      .filter(([utc, local]) => utc !== local);
+
+    // A fixpoint, because pulling in one month can pull in the next: Sep–Oct then Oct–Nov.
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [utc, local] of straddling) {
+        if (months.has(utc) === months.has(local)) continue;
+        months.add(utc);
+        months.add(local);
+        grew = true;
+      }
+    }
+    return [...months].sort();
   }
 
   /**
@@ -783,16 +847,16 @@ export class Store {
     const through = merged[merged.length - 1] || null;
     const { tasks } = foldEvents(merged);
 
-    const months = [...new Set(merged.map((e) => monthOf(e.ts)))].sort();
+    const months = [...new Set(merged.map(monthOfEvent))].sort();
     const stats = new Map();
     const eventsIn = new Map();
     for (const m of months) {
-      const evs = merged.filter((e) => monthOf(e.ts) === m);
+      const evs = merged.filter((e) => monthOfEvent(e) === m);
       eventsIn.set(m, evs);
       stats.set(m, {
         month: m,
         events: evs.length,
-        days: new Set(evs.map((e) => e.ts.slice(0, 10))).size,
+        days: new Set(evs.map((e) => localDate(e.ts))).size,
         updated: new Date().toISOString(),
       });
     }
@@ -850,8 +914,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>
   previewCommit() {
     if (!this.hasPending) return null;
 
-    const touched = this.touchedMonths;
-    const unread = touched.filter((m) => this.loadedMonths.length && !this.loadedMonths.includes(m));
+    const touchedAll = this.touchedMonths;
+    const unread = touchedAll.filter((m) => this.loadedMonths.length && !this.loadedMonths.includes(m));
     if (unread.length) {
       // Rewriting a month we never read would drop its events. push() loads them first.
       throw new Error(`Cannot build a commit: ${unread.join(', ')} has not been read from the repo yet.`);
@@ -861,16 +925,20 @@ Co-Authored-By: Claude <noreply@anthropic.com>
     const through = merged[merged.length - 1] || null;
     const { tasks } = foldEvents(merged.filter((e) => afterThrough(e, this.checkpoint?.through)), { base: this.checkpoint?.tasks });
 
+    const eventsIn = new Map(touchedAll.map((m) => [m, merged.filter((e) => monthOfEvent(e) === m)]));
+    // A month pulled in only to move an event out of it is written even if that leaves
+    // it empty -- it already exists in the repo and would otherwise keep a stale copy.
+    // A month that would be created empty is not written, and does not enter the index.
+    const touched = touchedAll.filter((m) => eventsIn.get(m).length || this.monthStats.has(m));
+
     // Month stats, refreshed for what we touched and carried over for what we did not.
     const stats = new Map([...this.monthStats].map(([m, s]) => [m, { ...s }]));
-    const eventsIn = new Map();
     for (const m of touched) {
-      const evs = merged.filter((e) => monthOf(e.ts) === m);
-      eventsIn.set(m, evs);
+      const evs = eventsIn.get(m);
       stats.set(m, {
         month: m,
         events: evs.length,
-        days: new Set(evs.map((e) => e.ts.slice(0, 10))).size,
+        days: new Set(evs.map((e) => localDate(e.ts))).size,
         updated: new Date().toISOString(),
       });
     }

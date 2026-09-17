@@ -46,7 +46,12 @@ export async function inspect(repo) {
  */
 export function starterEvents() {
   const a = newTaskId(); const b = newTaskId(); const c = newTaskId();
-  const at = (mins) => new Date(Date.now() - mins * 60000).toISOString();
+  // Clamped to the start of today, local time: these events are written into this
+  // month's file, and an event whose local date fell into last month -- easy to hit
+  // just after midnight on the 1st -- would be filed somewhere it does not belong.
+  const now = new Date();
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 1).getTime();
+  const at = (mins) => new Date(Math.max(now.getTime() - mins * 60000, dayStart)).toISOString();
 
   const events = [
     { ...makeEvent('task.create', { taskId: a, title: 'Read the AI summary each morning', status: 'in_progress', priority: 'normal', tags: ['habit'] }), ts: at(50) },

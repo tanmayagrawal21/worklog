@@ -2,7 +2,7 @@ import { check, checkAsync, eq, ok, report } from './shim.js';
 import {
   foldEvents, unionEvents, makeEvent, newTaskId, Store, STATUSES, statusLabel,
   PATHS, serialiseMonth, renderMonthMd, renderYearReadme, renderChangelogIndex,
-  renderBoardMd, renderBoardSnapshot, afterThrough,
+  renderBoardMd, renderBoardSnapshot, afterThrough, todayISO,
 } from '../js/store.js';
 
 /** Fixed timestamps keep ordering assertions deterministic. */
@@ -117,7 +117,7 @@ check('previewCommit describes the commit without performing it', () => {
   const p = s.previewCommit();
   ok(p, 'preview should exist when pending');
   eq(p.count, 1);
-  const month = new Date().toISOString().slice(0, 7);
+  const month = todayISO().slice(0, 7);
   const paths = p.files.map((f) => f.path).sort();
   // JSON and its rendered page are committed together: that is what makes the repo
   // readable with no Action and no build step.
@@ -467,7 +467,7 @@ check('every link in the rendered pages stays inside the repo', () => {
       }
     }
   };
-  const month = new Date().toISOString().slice(0, 7);
+  const month = todayISO().slice(0, 7);
   at(PATHS.boardMd, renderBoardMd(new Map()));
   at(PATHS.changelog, renderChangelogIndex([{ month, events: 1, days: 1 }]));
   at(PATHS.yearReadme(month.slice(0, 4)), renderYearReadme(month.slice(0, 4), [{ month, events: 1, days: 1 }]));

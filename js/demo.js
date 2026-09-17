@@ -37,7 +37,8 @@ const ID = {
 function clock() {
   const now = Date.now();
   const d = new Date(now);
-  const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 30);
+  // Local month start, because that is the month file an event is written to.
+  const monthStart = new Date(d.getFullYear(), d.getMonth(), 1, 0, 30).getTime();
   const room = (now - monthStart) / 3600000;
   const scale = Math.min(1, room / 170);
   return (hoursAgo) => new Date(now - hoursAgo * scale * 3600000).toISOString();
