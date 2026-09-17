@@ -167,6 +167,82 @@ export class GitHubRepo {
     return { sha: j.content.sha, commit: j.commit.sha };
   }
 
+  /* ---------- bootstrapping a brand-new repo ---------------------------- */
+
+  /** Does this repo exist and can we see it? */
+  async exists() {
+    const res = await fetch(`${API}/repos/${this.slug}`, { headers: this._headers() });
+    if (res.status === 401) throw new AuthError('GitHub rejected the token (401). Is it expired?');
+    return res.ok;
+  }
+
+  /**
+   * Does the branch have any commits yet?
+   * A freshly created repo with no README has no branches at all, which matters
+   * because commitFiles() needs a parent commit to build on.
+   */
+  async hasCommits() {
+    const res = await fetch(`${API}/repos/${this.slug}/git/ref/heads/${this.branch}`, { headers: this._headers() });
+    return res.ok;
+  }
+
+  /**
+   * Create the data repo on the user's account.
+   *
+   * Note on tokens: a fine-grained PAT is scoped to repositories that already
+   * exist, so it generally CANNOT create one. Creating a repo needs either a
+   * classic token with `repo` scope, or a fine-grained token granted the
+   * account-level "Administration" / repository-creation permission. When the
+   * token cannot do it we say so plainly and point at the two alternatives
+   * (create it by hand, or run scripts/setup.sh) rather than failing obscurely.
+   */
+  async createRepo({ private: isPrivate = true, description = 'Personal work log' } = {}) {
+    if (!this.token) throw new AuthError('A GitHub token is required to create a repository.');
+    const res = await fetch(`${API}/user/repos`, {
+      method: 'POST',
+      headers: this._headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        name: this.repo,
+        description,
+        private: isPrivate,
+        auto_init: false,       // we write the first commit ourselves, below
+        has_issues: false,
+        has_wiki: false,
+      }),
+    });
+
+    if (res.status === 403 || res.status === 404) {
+      throw new AuthError(
+        'This token cannot create repositories. Fine-grained tokens only cover repos that '
+        + 'already exist. Either create the repo yourself on github.com (empty, no README) and '
+        + 'come back, or run scripts/setup.sh which uses the gh CLI.',
+      );
+    }
+    if (res.status === 422) {
+      const t = await res.text();
+      if (/already exists/i.test(t)) return { created: false, existed: true };
+      throw new Error(`GitHub could not create ${this.repo}: ${t}`);
+    }
+    if (!res.ok) throw new Error(`GitHub ${res.status} creating repo: ${await res.text()}`);
+
+    const j = await res.json();
+    this._visibility = j.private ? 'private' : 'public';
+    return { created: true, existed: false, htmlUrl: j.html_url, defaultBranch: j.default_branch };
+  }
+
+  /**
+   * Write the very first commit. commitFiles() cannot be used here because it
+   * needs an existing ref to parent from; the contents API creates the branch.
+   * Subsequent files go through a normal atomic commit.
+   */
+  async initialCommit(files, message) {
+    if (!files.length) return null;
+    const [first, ...rest] = files;
+    await this.putFile(first.path, first.text, null, message);
+    if (rest.length) await this.commitFiles(rest, message);
+    return { ok: true };
+  }
+
   /* ---------- atomic multi-file commit ---------------------------------- */
   /**
    * Write several files in ONE commit via the Git Data API.
