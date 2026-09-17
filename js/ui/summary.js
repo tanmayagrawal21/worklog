@@ -31,6 +31,7 @@ export class SummaryView {
       el('p', { class: 'sub' }, 'A ',
         el('strong', { text: 'morning' }), ' summary says where things stand; an ',
         el('strong', { text: 'evening' }), ' one says what moved.'),
+      this.app.onRules ? notice('info', 'Written by the demo interpreter — a tally composed from the board and the day\'s events by keyword rules, not a model. A real provider says what it means rather than what it counts.') : null,
       this.error ? notice('error', this.error) : null,
       el('div', { class: 'row', style: 'margin-top:12px' },
         this.button('morning', 'Morning summary', forToday.morning),

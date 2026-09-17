@@ -24,6 +24,7 @@
 import { makeEvent, newTaskId, todayISO, localDate, localTime } from './store.js';
 import { PROVIDERS, DEFAULT_PROVIDER } from './providers.js';
 import { browserChat, listBrowserModels } from './webllm.js';
+import { ruleOperations, ruleSummary } from './rules.js';
 
 /** Fallback list when an endpoint cannot be asked what it serves. */
 export const suggestedFor = (providerId) => [...(PROVIDERS[providerId] || PROVIDERS[DEFAULT_PROVIDER]).suggested];
@@ -307,6 +308,11 @@ Rules:
 export async function proposeOperations({ endpoint, tasks, text, includeNotes = true, onProgress }) {
   if (!text || !text.trim()) throw new AIError('Nothing to interpret — write an update first.');
 
+  // The demo interpreter joins here rather than inside chat(), because it works on the
+  // structured board instead of a prompt -- and it goes through the same sanitiser, so
+  // the review UI cannot tell which of the two produced what it is showing.
+  if (endpoint?.kind === 'rules') return sanitiseOperations(ruleOperations({ tasks, text }), tasks);
+
   const user = [
     `Today is ${todayISO()} (the engineer's local date).`,
     '',
@@ -464,6 +470,13 @@ export async function summarise({ endpoint, tasks, events, kind = 'evening', pre
     ? `Events from the ${MORNING_DAYS} days before today (${window.length})`
     : `Events logged today (${window.length})`;
 
+  if (endpoint?.kind === 'rules') {
+    return clampSummary(
+      ruleSummary({ tasks: tasks.filter((t) => !t.private && !t.deleted), events: window, kind }),
+      tasks,
+    );
+  }
+
   const user = [
     `Today is ${today} (the engineer's local date; times below are local too). This is the ${kind} summary.`,
     focus,
@@ -481,17 +494,26 @@ export async function summarise({ endpoint, tasks, events, kind = 'evening', pre
     { role: 'user', content: user },
   ], { schema: SUMMARY_SCHEMA, temperature: 0.3, onProgress });
 
-  const p = parseJSONLoose(raw);
-  const known = new Set(tasks.map((t) => t.id));
+  return clampSummary(parseJSONLoose(raw), tasks);
+}
 
+/**
+ * Trim a summary to what the UI will render and drop task ids that do not exist.
+ *
+ * Applied to the rule engine's output too, even though that output is ours: a bullet
+ * pointing at a task the board does not have would render a dead button either way, and
+ * one clamp is easier to trust than two.
+ */
+function clampSummary(p, tasks) {
+  const known = new Set(tasks.map((t) => t.id));
   return {
-    headline: String(p.headline || '').slice(0, 200),
-    bullets: (Array.isArray(p.bullets) ? p.bullets : []).slice(0, 6).map((b) => ({
+    headline: String(p?.headline || '').slice(0, 200),
+    bullets: (Array.isArray(p?.bullets) ? p.bullets : []).slice(0, 6).map((b) => ({
       text: String(b?.text || '').slice(0, 240),
       taskIds: (Array.isArray(b?.taskIds) ? b.taskIds : []).filter((id) => known.has(id)),
     })).filter((b) => b.text),
-    risks: (Array.isArray(p.risks) ? p.risks : []).slice(0, 5).map((r) => String(r).slice(0, 240)).filter(Boolean),
-    next: (Array.isArray(p.next) ? p.next : []).slice(0, 3).map((r) => String(r).slice(0, 240)).filter(Boolean),
+    risks: (Array.isArray(p?.risks) ? p.risks : []).slice(0, 5).map((r) => String(r).slice(0, 240)).filter(Boolean),
+    next: (Array.isArray(p?.next) ? p.next : []).slice(0, 3).map((r) => String(r).slice(0, 240)).filter(Boolean),
   };
 }
 

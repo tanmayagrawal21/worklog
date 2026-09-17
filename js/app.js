@@ -173,7 +173,18 @@ class App {
   get configured() { return !!(this.settings.owner && this.settings.repo); }
 
   /** Where AI requests go, resolved fresh so a settings change takes effect at once. */
-  get endpoint() { return resolveEndpoint(this.settings, this.tokens.ai); }
+  get endpoint() {
+    const ep = resolveEndpoint(this.settings, this.tokens.ai);
+    // The demo has no key to paste, and an AI pane that only says "configure a provider"
+    // demonstrates nothing. So when the demo's endpoint is unusable -- which for a first
+    // visitor it always is -- fall back to the built-in keyword interpreter. A visitor
+    // who HAS configured a provider keeps it; this never overrides a working choice.
+    if (this.demo && endpointProblem(ep)) return resolveEndpoint({ provider: 'rules' }, {});
+    return ep;
+  }
+
+  /** True when the AI panes are running on keyword rules rather than a model. */
+  get onRules() { return this.endpoint.kind === 'rules'; }
 
   get aiEnabled() { return !endpointProblem(this.endpoint); }
 
@@ -457,14 +468,18 @@ class App {
    * "is my work log leaving this machine" should never require opening a dialog.
    */
   aiChip() {
-    const p = PROVIDERS[this.settings.provider] || {};
+    const ep = this.endpoint;
+    const p = PROVIDERS[ep.id] || {};
     const mode = p.mode || 'off';
-    const text = mode === 'off' ? 'AI off' : mode === 'local' ? 'AI: local' : `AI: ${p.label.split(' (')[0]}`;
-    const title = mode === 'off'
-      ? 'No model configured — nothing is sent anywhere but your repo.'
-      : mode === 'local'
-        ? `${p.label} — task data stays on this machine.`
-        : `${p.label} — task titles (and notes, unless you turn that off) are sent there.`;
+    const rules = ep.kind === 'rules';
+    const text = rules ? 'AI: demo rules' : mode === 'off' ? 'AI off' : mode === 'local' ? 'AI: local' : `AI: ${p.label.split(' (')[0]}`;
+    const title = rules
+      ? 'The demo interpreter: keyword rules in this page, not a model. Nothing is sent anywhere.'
+      : mode === 'off'
+        ? 'No model configured — nothing is sent anywhere but your repo.'
+        : mode === 'local'
+          ? `${p.label} — task data stays on this machine.`
+          : `${p.label} — task titles (and notes, unless you turn that off) are sent there.`;
     return el('button', {
       class: `ai-chip mode-${mode}`,
       text,
@@ -553,7 +568,10 @@ class App {
     return el('div', { class: 'view-narrow', style: 'margin-bottom:14px' },
       el('div', { class: 'card' },
         el('h2', { text: 'This is a demo board' }),
-        el('p', { class: 'sub', text: 'A week of invented work, so you can see the thing before setting anything up. Drag cards, open the wiki, read the summary — nothing is saved, nothing is sent anywhere, and no token was asked for.' }),
+        el('p', { class: 'sub', text: 'A week of invented work, so you can see the thing before setting anything up. Drag cards, open the wiki, brain-dump a paragraph and take a summary — nothing is saved, nothing is sent anywhere, and no token was asked for.' }),
+        el('p', { class: 'sub' }, 'The two AI views work here too, run by a ',
+          el('strong', { text: 'keyword interpreter built into the page' }),
+          ' rather than a model: good enough to show how proposals are reviewed before they touch the board, and obviously not as good as the real thing. Settings is where a real provider goes.'),
         el('div', { class: 'row', style: 'margin-top:12px' },
           el('button', { class: 'primary', text: 'Set up my own log', on: { click: () => this.leaveDemo() } }),
           el('span', { class: 'spacer' }),

@@ -59,6 +59,23 @@ export const PROVIDERS = Object.freeze({
     note: 'The board, notes, search, publishing and the git changelog all work. Only the summary and brain-dump features need a model.',
   },
 
+  /**
+   * The demo's stand-in. Not offered in Settings (hidden), because choosing keyword
+   * rules over a model is not a real preference -- it exists so ?demo=1 can show the
+   * brain dump and the summary to someone who has not pasted a key anywhere.
+   */
+  rules: {
+    label: 'Demo interpreter (keyword rules, not a model)',
+    mode: 'local',
+    kind: 'rules',
+    baseUrl: '',
+    needsToken: false,
+    local: true,
+    hidden: true,
+    suggested: ['keyword-rules'],
+    note: 'A few dozen keyword rules running in this page. No model, no download, nothing sent anywhere — enough to see how proposals are reviewed before they are applied.',
+  },
+
   /* ---- on your own machine ---- */
 
   webgpu: {
@@ -184,7 +201,7 @@ export const DEFAULT_PROVIDER = 'huggingface';
 
 /** Providers offered under a given mode, in the order they should be presented. */
 export const providersInMode = (mode) => Object.entries(PROVIDERS)
-  .filter(([, p]) => p.mode === mode)
+  .filter(([, p]) => p.mode === mode && !p.hidden)
   .map(([id, p]) => ({ id, ...p }));
 
 export const modeOf = (providerId) => (PROVIDERS[providerId] || PROVIDERS[DEFAULT_PROVIDER]).mode;
@@ -224,6 +241,10 @@ export function resolveEndpoint(settings = {}, tokens = {}) {
  */
 export function endpointProblem(ep) {
   if (!ep || ep.kind === 'none') return 'AI is turned off. Choose a provider in Settings to use summaries and the brain dump.';
+
+  // Rules need nothing: no key, no URL, no model, no GPU. That is their whole reason
+  // for existing, so they are usable the moment they are selected.
+  if (ep.kind === 'rules') return null;
 
   if (ep.kind === 'webgpu') {
     if (typeof navigator !== 'undefined' && !navigator.gpu) {

@@ -50,6 +50,7 @@ export class BraindumpView {
       el('h2', { text: 'What did you do?' }),
       el('p', { class: 'sub' }, 'Write it however you like. The AI turns it into board changes and ',
         el('strong', { text: 'shows you each one before anything is applied' }), '.'),
+      this.app.onRules ? notice('info', 'This is the demo interpreter: keyword rules in this page, not a model. It matches lines to tasks and guesses at status changes, which is enough to show the review step — a real provider reads your update far better. Nothing typed here leaves the page.') : null,
       el('div', { class: 'field', style: 'margin-top:12px' }, input),
       this.error ? notice('error', this.error) : null,
       el('div', { class: 'row', style: 'justify-content:flex-end' },
