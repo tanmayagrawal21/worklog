@@ -231,16 +231,44 @@ export class GitHubRepo {
   }
 
   /**
-   * Write the very first commit. commitFiles() cannot be used here because it
-   * needs an existing ref to parent from; the contents API creates the branch.
-   * Subsequent files go through a normal atomic commit.
+   * Write the very first commit into a repo that has no branches yet.
+   *
+   * commitFiles() cannot be used as-is because it reads the branch tip to parent
+   * from, and there is none. So this builds a ROOT commit (empty `parents`) and
+   * creates the ref pointing at it, which keeps the repo's history starting with a
+   * single clean commit rather than one file followed by "and the rest".
+   *
+   * Falls back to the contents API if the Git Data route is refused: a first run is
+   * a bad place to be brittle, and two commits beats a failed setup. The fallback
+   * costs an extra commit, which is why it is not the primary path.
    */
   async initialCommit(files, message) {
     if (!files.length) return null;
-    const [first, ...rest] = files;
-    await this.putFile(first.path, first.text, null, message);
-    if (rest.length) await this.commitFiles(rest, message);
-    return { ok: true };
+    if (!this.token) throw new AuthError('A GitHub token is required to create the first commit.');
+
+    try {
+      const tree = await this._json(`${API}/repos/${this.slug}/git/trees`, {
+        method: 'POST',
+        body: JSON.stringify({ tree: files.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.text })) }),
+      });
+      const commit = await this._json(`${API}/repos/${this.slug}/git/commits`, {
+        method: 'POST',
+        body: JSON.stringify({ message, tree: tree.sha, parents: [] }),
+      });
+      const res = await fetch(`${API}/repos/${this.slug}/git/refs`, {
+        method: 'POST',
+        headers: this._headers({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ ref: `refs/heads/${this.branch}`, sha: commit.sha }),
+      });
+      if (!res.ok) throw new Error(`GitHub ${res.status} creating branch: ${await res.text()}`);
+      return { commit: commit.sha, commits: 1 };
+    } catch (err) {
+      if (err instanceof AuthError) throw err;
+      const [first, ...rest] = files;
+      await this.putFile(first.path, first.text, null, message);
+      if (rest.length) await this.commitFiles(rest, message);
+      return { commits: rest.length ? 2 : 1, viaFallback: true };
+    }
   }
 
   /* ---------- atomic multi-file commit ---------------------------------- */
