@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Logs / scratch
+*.log
+tmp/
+scratch/
+
+# Secrets never belong in this repo.
+# The app keeps tokens in browser localStorage, never in a file — these entries
+# exist to catch a stray local config before it is committed by accident.
+.env
+.env.*
+*.token
+secrets.json
+
+# This is a zero-build project (no bundler, no package manager) — if a dependency
+# ever creeps in, keep its install tree out of git.
+node_modules/
