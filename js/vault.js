@@ -6,8 +6,9 @@
  * client-side passphrase, and it keeps task JSON readable in `git diff` so the
  * repo works as an actual changelog of your work.
  *
- * What remains worth protecting is the GitHub token, which lives in this browser
- * and grants write access to the repo. Two modes:
+ * What remains worth protecting are the tokens: the GitHub token, which grants write
+ * access to the repo, and any AI provider keys, which are billable. Both live in this
+ * browser. Two modes:
  *   - plain  : token in localStorage as-is. No prompt; convenient on a machine only
  *              you use. Readable by devtools or any script on this origin.
  *   - locked : token encrypted with AES-GCM under a key derived from a passphrase
@@ -65,10 +66,24 @@ export function isLocked() {
 }
 
 /**
- * Persist tokens. Pass a passphrase to encrypt them; omit it to store plainly.
- * @param {{githubToken?:string, hfToken?:string}} secrets
+ * Migrate the original single-provider shape. v1 stored one `hfToken`; keys are now
+ * per provider, since someone may hold an OpenAI key and an Anthropic key at once.
+ * Done here rather than in the app so both storage modes get it for free.
  */
-export async function saveTokens(secrets, passphrase = null) {
+function normaliseSecrets(secrets) {
+  const s = { ...(secrets || {}) };
+  const aiTokens = { ...(s.aiTokens || {}) };
+  if (s.hfToken && !aiTokens.huggingface) aiTokens.huggingface = s.hfToken;
+  delete s.hfToken;
+  return { githubToken: s.githubToken || null, ...s, aiTokens };
+}
+
+/**
+ * Persist tokens. Pass a passphrase to encrypt them; omit it to store plainly.
+ * @param {{githubToken?:string, aiTokens?:Record<string,string>}} secrets
+ */
+export async function saveTokens(rawSecrets, passphrase = null) {
+  const secrets = normaliseSecrets(rawSecrets);
   if (!passphrase) {
     localStorage.setItem(STORE_KEY, JSON.stringify({ locked: false, secrets }));
     return;
@@ -89,7 +104,7 @@ export async function saveTokens(secrets, passphrase = null) {
 }
 
 /**
- * Read tokens back.
+ * Read tokens back, in the current shape whatever version wrote them.
  * @returns {Promise<object|null>} secrets, or null if absent / wrong passphrase.
  */
 export async function loadTokens(passphrase = null) {
@@ -98,7 +113,7 @@ export async function loadTokens(passphrase = null) {
 
   let rec;
   try { rec = JSON.parse(raw); } catch { return null; }
-  if (!rec.locked) return rec.secrets || null;
+  if (!rec.locked) return rec.secrets ? normaliseSecrets(rec.secrets) : null;
   if (!passphrase) return null;
 
   try {
@@ -106,7 +121,7 @@ export async function loadTokens(passphrase = null) {
     const pt = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: fromB64(rec.iv) }, key, fromB64(rec.ct),
     );
-    return JSON.parse(dec.decode(pt));
+    return normaliseSecrets(JSON.parse(dec.decode(pt)));
   } catch {
     return null; // AES-GCM auth failure => wrong passphrase
   }

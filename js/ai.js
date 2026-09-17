@@ -1,36 +1,32 @@
 /**
- * ai.js — summaries and board updates via Hugging Face Inference Providers.
+ * ai.js — summaries and board updates, from whichever model you point it at.
  *
- * Called straight from the browser: router.huggingface.co sends
- * `access-control-allow-origin: *`, so no backend or CI round trip is needed and
- * the propose/review/apply loop stays interactive.
+ * Provider-agnostic on purpose. Endpoints come in three kinds and chat() dispatches
+ * on that alone: 'none' (AI switched off — every flow refuses cleanly), 'webgpu' (a
+ * model running in this tab), and 'http' (anything speaking OpenAI's chat-completions
+ * shape: Hugging Face, OpenAI, Anthropic, Google, OpenRouter, a server on your laptop,
+ * or a custom URL). Nothing else in this file knows which one it is talking to.
  *
  * Two flows:
  *   proposeOperations() — free-text brain dump -> proposed board changes. Returns
  *     PROPOSALS ONLY. Applying them is the caller's (and the user's) decision.
  *   summarise()         — event log + board -> short executive summary in pointers.
  *
- * Reliability: HF routes to many providers whose `response_format` support varies,
- * so requests degrade json_schema -> json_object -> plain prompting, and parsing
- * tolerates a model that wraps JSON in prose or code fences.
+ * Reliability: structured-output support varies a lot across vendors and local
+ * servers, so requests degrade json_schema -> json_object -> plain prompting, and
+ * parsing tolerates a model that wraps JSON in prose or code fences. That degrade
+ * chain is what makes a 7B model on a laptop and a frontier API both workable.
  *
- * Privacy: the board is sent to a third-party inference provider. Tasks flagged
+ * Privacy: the board is sent to whatever endpoint is configured. Tasks flagged
  * `private` are never included, and notes can be withheld globally.
  */
 
 import { makeEvent, newTaskId } from './store.js';
+import { PROVIDERS, DEFAULT_PROVIDER } from './providers.js';
+import { browserChat, listBrowserModels } from './webllm.js';
 
-const ROUTER = 'https://router.huggingface.co/v1';
-
-export const DEFAULT_MODEL = 'openai/gpt-oss-120b:fastest';
-
-/** Sensible starting points; the settings picker replaces this with the live list. */
-export const SUGGESTED_MODELS = Object.freeze([
-  'openai/gpt-oss-120b:fastest',
-  'openai/gpt-oss-20b:fastest',
-  'Qwen/Qwen2.5-72B-Instruct',
-  'deepseek-ai/DeepSeek-V3',
-]);
+/** Fallback list when an endpoint cannot be asked what it serves. */
+export const suggestedFor = (providerId) => [...(PROVIDERS[providerId] || PROVIDERS[DEFAULT_PROVIDER]).suggested];
 
 export class AIError extends Error {
   constructor(msg, { retryable = false } = {}) {
@@ -43,44 +39,74 @@ export class AIError extends Error {
 /* ---------- model catalogue --------------------------------------------- */
 
 /**
- * Fetch models that are actually served right now. Queried live rather than
- * hardcoded because the catalogue changes frequently; SUGGESTED_MODELS is only a
- * fallback when the call fails.
+ * Ask the endpoint what it serves. Queried live rather than hardcoded because
+ * catalogues move constantly -- and for a local server it is the only way to know
+ * which models you have actually pulled. Falls back to the preset's list.
  */
-export async function listModels(token) {
+export async function listModels(ep) {
+  const fallback = suggestedFor(ep?.id);
+  if (ep?.kind === 'none') return [];
+  if (ep?.kind === 'webgpu') {
+    try { return await listBrowserModels(); } catch { return fallback; }
+  }
+  if (!ep?.baseUrl) return fallback;
   try {
-    const res = await fetch(`${ROUTER}/models`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) return [...SUGGESTED_MODELS];
+    const res = await fetch(`${ep.baseUrl}/models`, { headers: authHeaders(ep) });
+    if (!res.ok) return fallback;
     const j = await res.json();
-    const ids = (j.data || []).map((m) => m.id).filter(Boolean);
-    return ids.length ? ids.sort() : [...SUGGESTED_MODELS];
+    const ids = (j.data || j.models || []).map((m) => m.id || m.name).filter(Boolean);
+    return ids.length ? ids.sort() : fallback;
   } catch {
-    return [...SUGGESTED_MODELS];
+    return fallback;                    // offline, CORS-blocked, or server not running
   }
 }
 
 /* ---------- transport ---------------------------------------------------- */
 
-function explainHttp(status, body) {
-  if (status === 401) return new AIError('Hugging Face rejected the token (401). Create one with the "Make calls to Inference Providers" permission.');
-  if (status === 402) return new AIError('Hugging Face inference credits are exhausted (402). Wait for the monthly reset, pick a smaller model, or upgrade to PRO.');
-  if (status === 429) return new AIError('Rate limited by Hugging Face (429). Wait a moment and retry.', { retryable: true });
-  if (status === 404) return new AIError('That model is not available through Inference Providers. Pick another in Settings.');
-  if (status >= 500) return new AIError(`The inference provider failed (${status}). This is usually transient.`, { retryable: true });
-  return new AIError(`Hugging Face returned ${status}: ${String(body).slice(0, 300)}`);
+function authHeaders(ep) {
+  return {
+    ...(ep.headers || {}),
+    ...(ep.token ? { Authorization: `Bearer ${ep.token}` } : {}),
+  };
+}
+
+function explainHttp(status, body, ep) {
+  const who = ep.label || 'The provider';
+  if (status === 401 || status === 403) {
+    return new AIError(ep.needsToken
+      ? `${who} rejected the API key (${status}). Check it in Settings.`
+      : `${who} refused the request (${status}). If it wants an API key, add one in Settings.`);
+  }
+  if (status === 402) return new AIError(`${who} is out of credit (402).${ep.id === 'huggingface' ? ' Free accounts get $0.10 a month; wait for the reset, pick a smaller model, or upgrade to PRO.' : ' Top up, or switch provider in Settings.'}`);
+  if (status === 429) return new AIError(`Rate limited by ${who} (429). Wait a moment and retry.`, { retryable: true });
+  if (status === 404) return new AIError(`${who} does not serve "${ep.model}". Pick another model in Settings.`);
+  if (status >= 500) return new AIError(`${who} failed (${status}). This is usually transient.`, { retryable: true });
+  return new AIError(`${who} returned ${status}: ${String(body).slice(0, 300)}`);
 }
 
 /** True when a 4xx looks like "this provider does not support that response_format". */
-const isFormatComplaint = (body) => /response_format|json_schema|schema|not supported|unsupported/i.test(String(body));
+const isFormatComplaint = (body) => /response_format|json_schema|schema|not supported|unsupported|invalid.*format/i.test(String(body));
 
 /**
- * One chat completion, degrading response_format until the provider accepts it.
+ * One chat completion, degrading response_format until the endpoint accepts it.
  * Returns raw assistant text.
  */
-async function chat(token, model, messages, { schema = null, maxTokens = 1600, temperature = 0.2 } = {}) {
-  if (!token) throw new AIError('No Hugging Face token set. Add one in Settings to enable AI features.');
+async function chat(ep, messages, { schema = null, maxTokens = 1600, temperature = 0.2, onProgress } = {}) {
+  if (!ep || ep.kind === 'none') {
+    throw new AIError('AI is turned off. Pick a provider in Settings — including one that runs entirely on your own machine.');
+  }
+
+  if (ep.kind === 'webgpu') {
+    if (!ep.model) throw new AIError('No local model chosen. Pick one in Settings.');
+    try {
+      return await browserChat(ep, messages, { schema, maxTokens, temperature, onProgress });
+    } catch (e) {
+      throw e instanceof AIError ? e : new AIError(e.message || 'The in-browser model failed to run.', { retryable: true });
+    }
+  }
+
+  if (!ep.baseUrl) throw new AIError('No AI endpoint configured. Choose a provider in Settings.');
+  if (ep.needsToken && !ep.token) throw new AIError(`No API key set for ${ep.label}. Add one in Settings to use AI features.`);
 
   const attempts = schema
     ? [
@@ -93,7 +119,7 @@ async function chat(token, model, messages, { schema = null, maxTokens = 1600, t
   let lastErr;
   for (const response_format of attempts) {
     const body = {
-      model,
+      model: ep.model,
       messages,
       max_tokens: maxTokens,
       temperature,
@@ -102,13 +128,18 @@ async function chat(token, model, messages, { schema = null, maxTokens = 1600, t
 
     let res;
     try {
-      res = await fetch(`${ROUTER}/chat/completions`, {
+      res = await fetch(`${ep.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(ep), 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
     } catch {
-      throw new AIError('Could not reach Hugging Face. Check your network connection.', { retryable: true });
+      // A blocked cross-origin request is indistinguishable from being offline here,
+      // so name both -- for a local server the cause is nearly always CORS.
+      throw new AIError(ep.local
+        ? `Could not reach ${ep.label} at ${ep.baseUrl}. Is it running, and started with browser origins allowed?`
+        : `Could not reach ${ep.label}. Check your connection, or whether that endpoint allows browser requests.`,
+      { retryable: true });
     }
 
     if (res.ok) {
@@ -119,7 +150,7 @@ async function chat(token, model, messages, { schema = null, maxTokens = 1600, t
     }
 
     const text = await res.text();
-    lastErr = explainHttp(res.status, text);
+    lastErr = explainHttp(res.status, text, ep);
     // Only a format complaint is worth degrading for; anything else is terminal.
     if (!(res.status >= 400 && res.status < 500 && isFormatComplaint(text))) throw lastErr;
   }
@@ -219,9 +250,7 @@ Rules:
  * Turn a free-text update into proposed board operations.
  * Returns proposals for review — it never mutates anything.
  */
-export async function proposeOperations({
-  token, model = DEFAULT_MODEL, tasks, text, includeNotes = true,
-}) {
+export async function proposeOperations({ endpoint, tasks, text, includeNotes = true, onProgress }) {
   if (!text || !text.trim()) throw new AIError('Nothing to interpret — write an update first.');
 
   const user = [
@@ -234,10 +263,10 @@ export async function proposeOperations({
     text.trim(),
   ].join('\n');
 
-  const raw = await chat(token, model, [
+  const raw = await chat(endpoint, [
     { role: 'system', content: OPS_SYSTEM },
     { role: 'user', content: user },
-  ], { schema: OPERATIONS_SCHEMA, temperature: 0.1 });
+  ], { schema: OPERATIONS_SCHEMA, temperature: 0.1, onProgress });
 
   const parsed = parseJSONLoose(raw);
   return sanitiseOperations(parsed.operations || [], tasks);
@@ -341,9 +370,7 @@ Style:
  * Generate a summary.
  * @param {'morning'|'evening'} kind morning reports standing state; evening reports what moved.
  */
-export async function summarise({
-  token, model = DEFAULT_MODEL, tasks, events, kind = 'evening', previous = null, includeNotes = true,
-}) {
+export async function summarise({ endpoint, tasks, events, kind = 'evening', previous = null, includeNotes = true, onProgress }) {
   const today = new Date().toISOString().slice(0, 10);
   const priv = new Set(tasks.filter((t) => t.private).map((t) => t.id));
 
@@ -367,10 +394,10 @@ export async function summarise({
     ...(previous?.headline ? ['', `Previous summary said: ${previous.headline}`] : []),
   ].join('\n');
 
-  const raw = await chat(token, model, [
+  const raw = await chat(endpoint, [
     { role: 'system', content: SUMMARY_SYSTEM },
     { role: 'user', content: user },
-  ], { schema: SUMMARY_SCHEMA, temperature: 0.3 });
+  ], { schema: SUMMARY_SCHEMA, temperature: 0.3, onProgress });
 
   const p = parseJSONLoose(raw);
   const known = new Set(tasks.map((t) => t.id));
