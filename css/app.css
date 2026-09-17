@@ -443,3 +443,6 @@ ul.file-list li::before { content: "M "; color: var(--good); }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Earlier years are in the repo but not downloaded; the wiki offers them. */
+.wiki-more { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }

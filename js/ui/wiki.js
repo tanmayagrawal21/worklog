@@ -112,7 +112,56 @@ export class WikiView {
       el('p', { class: 'sub', text: 'Every day you logged something. This is the changelog, read forwards.' }),
       el('ul', { class: 'wiki-list', style: 'margin-top:10px' }, list.map(([d, n]) => el('li', {},
         el('button', { class: 'wiki-link', text: d, on: { click: () => this.go('days', d) } }),
-        el('span', { class: 'wiki-meta', text: ` ${plural(n, 'change')}` })))));
+        el('span', { class: 'wiki-meta', text: ` ${plural(n, 'change')}` })))),
+      this.historyFooter());
+  }
+
+  /**
+   * Older months are not read on boot -- that is what keeps startup the same speed in
+   * year five as in week one. Say so plainly here, and offer the years rather than
+   * pretending the log stops where the download did.
+   */
+  historyFooter() {
+    const store = this.app.store;
+    if (!store || store.fullyLoaded) return null;
+
+    const missing = store.years.filter((y) => !store.yearLoaded(y));
+    if (!missing.length) return null;
+
+    return el('div', { class: 'wiki-more' },
+      el('div', { class: 'sub', text: 'Earlier months are in the repo but not loaded yet — the board comes from a snapshot, so opening the app stays fast however long you have used it.' }),
+      el('div', { class: 'row', style: 'margin-top:8px;flex-wrap:wrap' },
+        missing.map((y) => el('button', {
+          text: this.app.historyLoading === y ? `Loading ${y}…` : `Load ${y}`,
+          disabled: !!this.app.historyLoading,
+          on: { click: () => this.app.loadHistory(y) },
+        })),
+        el('span', { class: 'spacer' }),
+        el('button', {
+          class: 'ghost',
+          text: this.app.historyLoading === 'all' ? 'Loading…' : 'Load everything',
+          disabled: !!this.app.historyLoading,
+          on: { click: () => this.app.loadHistory() },
+        })));
+  }
+
+  /**
+   * The board snapshot drops notes from work finished long ago -- they are still
+   * committed in that month's log, and the snapshot is downloaded on every boot. Say
+   * where they went instead of showing a task as noteless.
+   */
+  trimmedNotesHint(t) {
+    const missing = (t.noteCount || 0) - t.notes.length;
+    if (missing <= 0) return null;
+    const year = String(t.done || t.updated || '').slice(0, 4);
+    return el('div', { class: 'wiki-more' },
+      el('div', { class: 'sub', text: `${plural(missing, 'earlier note')} on this finished task live in the monthly log rather than the board snapshot.` }),
+      year ? el('button', {
+        style: 'margin-top:8px',
+        text: this.app.historyLoading === year ? `Loading ${year}…` : `Load ${year} to read them`,
+        disabled: !!this.app.historyLoading,
+        on: { click: () => this.app.loadHistory(year) },
+      }) : null);
   }
 
   /* ---------- article pages ---------------------------------------------- */
@@ -150,12 +199,13 @@ export class WikiView {
         class: 'tag wiki-link', text: g, on: { click: () => this.go('tags', g) },
       }))) : null,
 
-      el('div', { class: 'section-label', text: `Notes (${t.notes.length})` }),
+      el('div', { class: 'section-label', text: `Notes (${t.noteCount || t.notes.length})` }),
       t.notes.length
         ? el('div', {}, t.notes.map((n) => el('div', { class: 'wiki-note' },
           el('div', { class: 'wiki-meta', text: `${n.ts.slice(0, 10)} ${shortTime(n.ts)}` }),
           el('div', {}, this.linkify(n.text)))))
         : el('p', { class: 'sub', text: 'None yet. Notes written on the board show up here as a timeline.' }),
+      this.trimmedNotesHint(t),
 
       el('div', { class: 'section-label', text: 'History' }),
       el('ul', { class: 'wiki-list' }, history.map((e) => el('li', {},

@@ -74,6 +74,8 @@ class App {
     this.repoInfo = null;
     this.loadError = null;
     this.loading = false;
+    this.historyLoading = null;      // year being fetched on demand, if any
+    this.migrating = false;          // a layout upgrade is in flight
 
     this.store = null;
     this.views = {
@@ -315,6 +317,27 @@ class App {
     this.refresh();
   }
 
+  /**
+   * Fetch a year the boot deliberately skipped.
+   *
+   * A boot reads the snapshot and the last few months, which is what keeps opening the
+   * app fast in year five. The wiki is where you go looking further back, so that is
+   * where the rest of the history is offered rather than loaded for everyone.
+   */
+  async loadHistory(year = null) {
+    if (!this.store || this.historyLoading) return;
+    this.historyLoading = year || 'all';
+    this.refresh();
+    try {
+      await (year ? this.store.loadYear(year) : this.store.loadAll());
+    } catch (e) {
+      toast(`Could not load ${year || 'the full history'}: ${e.message}`, 'error');
+    } finally {
+      this.historyLoading = null;
+      this.refresh();
+    }
+  }
+
   reveal(taskId) {
     this.openPane('board');
     this.refresh();
@@ -473,7 +496,95 @@ class App {
         notice('info', 'Read-only: no GitHub token loaded, so nothing can be published. Add one in Settings.')));
     }
 
+    if (this.store?.needsMigration) this.main.append(this.migrationBanner());
+
     this.main.append(this.panesEl());
+  }
+
+  /**
+   * An older repo works as it is, so this says what the upgrade buys rather than
+   * warning about a problem. It is offered once per session and never acts on its own.
+   */
+  migrationBanner() {
+    return el('div', { class: 'view-narrow', style: 'margin-bottom:14px' },
+      el('div', { class: 'card' },
+        el('h2', { text: 'This repo uses the older layout' }),
+        el('p', { class: 'sub' }, 'Your board and history are complete — nothing is missing or at risk. '
+          + 'The older layout just keeps every month in one flat folder with no rendered pages, so the repo '
+          + 'is harder to read on GitHub and slower to open once you have a few years in it.'),
+        el('p', { class: 'sub', text: 'Upgrading rewrites the same events into per-year folders, adds a readable markdown page beside each month, and turns CHANGELOG.md into an index. No event is changed, and you see the exact commit first.' }),
+        el('div', { class: 'row', style: 'margin-top:12px' },
+          el('button', {
+            class: 'primary',
+            text: this.migrating ? 'Preparing…' : 'Upgrade layout…',
+            disabled: this.migrating || !this.tokens.github,
+            on: { click: () => this.upgradeLayout() },
+          }),
+          this.tokens.github ? null : el('span', { class: 'hint', text: 'Needs a GitHub token with write access.' }))));
+  }
+
+  /**
+   * Read the whole history, show the upgrade commit, and only then write it.
+   * Same gate as publish(): what the dialog lists is literally what gets sent.
+   */
+  async upgradeLayout() {
+    if (!this.store || this.migrating) return;
+    this.migrating = true;
+    this.refresh();
+
+    let plan;
+    const busy = dialog({ title: 'Reading your full history', body: spinner('Every month has to be read before it can be rewritten…'), dismissable: false });
+    try {
+      await this.store.loadAll();
+      plan = this.store.migrationCommit();
+    } catch (e) {
+      busy.close(true);
+      this.migrating = false;
+      this.refresh();
+      dialog({ title: 'Could not prepare the upgrade', body: notice('error', e.message), buttons: [{ label: 'Close', value: true }] });
+      return;
+    }
+    busy.close(true);
+    this.migrating = false;
+    this.refresh();
+
+    if (!plan) { toast('Already on the current layout.'); return; }
+
+    const shown = plan.files.slice(0, 12);
+    const body = el('div', {},
+      el('p', {}, 'This rewrites ', el('strong', { text: plural(plan.months.length, 'month') }),
+        ' as a single commit, preserving all ', el('strong', { text: plural(plan.count, 'event') }), '.'),
+      el('div', { class: 'section-label', text: 'Commit message' }),
+      el('pre', { class: 'commit-preview', text: plan.message }),
+      el('div', { class: 'section-label', text: `Files written (${plan.files.length})` }),
+      el('ul', { class: 'file-list' }, [
+        ...shown.map((f) => el('li', { text: f.path })),
+        plan.files.length > shown.length ? el('li', { text: `…and ${plan.files.length - shown.length} more` }) : null,
+      ]),
+      plan.deletions.length
+        ? el('div', {},
+          el('div', { class: 'section-label', text: `Files removed (${plan.deletions.length})` }),
+          el('ul', { class: 'file-list' }, plan.deletions.map((d) => el('li', { text: d }))),
+          notice('info', 'Their events are written to the new paths in this same commit, and git keeps the old versions in history either way.'))
+        : null);
+
+    const { done } = dialog({
+      title: 'Upgrade the data layout?',
+      body,
+      buttons: [{ label: 'Not now', value: false }, { label: 'Push this commit', class: 'primary', value: true }],
+    });
+    if (await done !== true) return;
+
+    const writing = dialog({ title: 'Upgrading', body: spinner('Committing the new layout…'), dismissable: false });
+    try {
+      await this.store.migrate();
+      writing.close(true);
+      toast('Layout upgraded. The repo now renders as markdown on GitHub.');
+    } catch (e) {
+      writing.close(true);
+      dialog({ title: 'Upgrade failed', body: notice('error', `${e.message} Nothing was lost — your events are still committed where they were.`), buttons: [{ label: 'Close', value: true }] });
+    }
+    this.refresh();
   }
 
   /** The panes themselves. One element per open view, in the order they were opened. */

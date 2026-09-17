@@ -15,7 +15,11 @@
  *   READY     — has a manifest; just load it.
  */
 
-import { makeEvent, newTaskId, todayISO } from './store.js';
+import {
+  makeEvent, newTaskId, todayISO, foldEvents, unionEvents, PATHS,
+  serialiseMonth, renderMonthMd, renderYearReadme, renderChangelogIndex,
+  renderLogReadme, renderBoardMd, renderBoardSnapshot, renderManifest,
+} from './store.js';
 
 export const RepoState = Object.freeze({
   MISSING: 'missing',
@@ -55,22 +59,41 @@ export function starterEvents() {
 
 /** A short README committed into the data repo so it explains itself later. */
 function dataRepoReadme(appUrl, slug) {
+  const month = todayISO().slice(0, 7);
   return `# Work log data
 
 Task data for a personal work log. **This repo is the data, not the app.**
 
-- \`data/log/YYYY-MM.json\` — the append-only event log: every task created, moved
-  or annotated, with timestamps. This is the real record of your work.
-- \`data/board.json\` — a generated snapshot of the current board. Convenient to
-  read, but derived; the event log is the source of truth.
-- \`CHANGELOG.md\` — the same history rendered for humans, newest first.
+## Read it right here
+
+You do not need to run anything, install anything, or set up an Action. Every page
+below is committed markdown, so GitHub renders it — in a private repo too.
+
+- **[Current board](${PATHS.boardMd})** — what is in flight, right now.
+- **[Changelog](${PATHS.changelog})** — an index by year and month.
+- **[This month](${PATHS.monthMd(month)})** — the day-by-day record.
+
+## How it is laid out
+
+\`\`\`
+${PATHS.month(month)}      the append-only event log for one month -- the source of truth
+${PATHS.monthMd(month)}        the same month rendered for reading
+data/log/${month.slice(0, 4)}/README.md    that year's index, rendered when you open the folder
+${PATHS.board}          a snapshot of the current board (generated)
+${PATHS.boardMd}            the same snapshot, rendered
+\`\`\`
+
+One file per month means every diff is about a month of work rather than about your
+whole history, so this stays readable however many years pile up.
 
 ## Reading your own history
 
 \`\`\`sh
-git log --oneline                        # one entry per push
-git log -p data/log/$(date +%Y-%m).json  # every change this month, in detail
+git log --oneline                                    # one entry per push
+git log -p data/log/$(date +%Y)/$(date +%m).json     # this month's events, in detail
 \`\`\`
+
+The event JSON keeps one event per line on purpose: a new change is one added line.
 
 ## Editing
 
@@ -87,23 +110,38 @@ also works — the app reads whatever is committed.
 /**
  * Build the scaffolding commit. Pure: returns files for the caller to confirm and
  * commit, so the preview shown to the user is exactly what gets written.
+ *
+ * Deliberately writes the rendered pages too, not just the JSON. A repo whose first
+ * commit already renders a board and a changelog is one you can hand to a colleague;
+ * one containing only machine files is not.
  */
 export function scaffoldFiles({ slug, appUrl = 'https://github.com', withExamples = true }) {
   const month = todayISO().slice(0, 7);
-  const events = withExamples ? starterEvents() : [];
+  const year = month.slice(0, 4);
+  const events = unionEvents(withExamples ? starterEvents() : []);
+  const { tasks } = foldEvents(events);
+  const through = events[events.length - 1] || null;
+
+  const stats = new Map([[month, {
+    month,
+    events: events.length,
+    days: new Set(events.map((e) => e.ts.slice(0, 10))).size,
+    updated: new Date().toISOString(),
+  }]]);
+  const statList = [...stats.values()];
 
   return {
     events,
     files: [
-      {
-        path: 'data/manifest.json',
-        text: `${JSON.stringify({ schema: 1, app: 'worklog', months: [month], updated: new Date().toISOString() }, null, 2)}\n`,
-      },
-      {
-        path: `data/log/${month}.json`,
-        text: `${JSON.stringify({ month, events }, null, 2)}\n`,
-      },
-      { path: 'README.md', text: dataRepoReadme(appUrl, slug) },
+      { path: PATHS.manifest,         text: renderManifest(stats) },
+      { path: PATHS.month(month),     text: serialiseMonth(month, events) },
+      { path: PATHS.monthMd(month),   text: renderMonthMd(month, events, tasks) },
+      { path: PATHS.yearReadme(year), text: renderYearReadme(year, statList) },
+      { path: PATHS.logReadme,        text: renderLogReadme() },
+      { path: PATHS.board,            text: renderBoardSnapshot(tasks, through) },
+      { path: PATHS.boardMd,          text: renderBoardMd(tasks) },
+      { path: PATHS.changelog,        text: renderChangelogIndex(statList) },
+      { path: 'README.md',            text: dataRepoReadme(appUrl, slug) },
     ],
   };
 }

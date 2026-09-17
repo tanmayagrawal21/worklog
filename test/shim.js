@@ -75,6 +75,12 @@ export function eq(actual, expected, msg = '') {
 
 export function ok(cond, msg = 'expected truthy') { if (!cond) throw new Error(msg); }
 
+/** Like check(), for a case that has to await something. Callers must await it. */
+export async function checkAsync(name, fn) {
+  try { await fn(); pass++; print(`  ok   ${name}`); }
+  catch (e) { failures.push(`${name}: ${e.message}`); print(`  FAIL ${name}\n       ${e.message}`); }
+}
+
 export function report(label) {
   print(`\n${label}: ${pass} passed, ${failures.length} failed`);
   if (failures.length) { print('\nFailures:'); failures.forEach((f) => print(`  - ${f}`)); }

@@ -1,7 +1,7 @@
 /**
  * store.js — event-sourced task store, persisted as plain JSON in a git repo.
  *
- * Two design choices worth explaining:
+ * Three design choices worth explaining:
  *
  * 1. APPEND-ONLY EVENTS ARE THE SOURCE OF TRUTH; board state is fold(events).
  *    This makes concurrent edits from two machines resolvable: merging is a union
@@ -14,9 +14,19 @@
  *    is an explicit, reviewable step: previewCommit() shows exactly what would be
  *    written, and only push() contacts the repo.
  *
- * Events are grouped into monthly files rather than daily ones so that a year of
- * history loads in ~12 requests instead of ~365, while diffs stay small enough to
- * read in a pull request.
+ * 3. EVERYTHING IS BOUNDED BY A MONTH. This is what makes the log survive years
+ *    rather than months. Events live in data/log/<year>/<month>.json; each month
+ *    also gets a rendered <month>.md, each year a README.md, and the root keeps a
+ *    thin CHANGELOG.md index. A push therefore rewrites a fixed handful of files
+ *    whose size depends on one month of work, never on how long you have used this.
+ *    GitHub renders a README.md in whatever directory you browse and renders any .md
+ *    you click, in private repos too, so browsing data/log/2026/ shows a readable
+ *    year with no Action, no build step and nothing installed.
+ *
+ * Loading is bounded the same way. data/board.json carries a `through` marker naming
+ * the last event folded into it, which makes it a checkpoint: state = snapshot +
+ * events after `through`. So a boot reads the manifest, the snapshot and the last few
+ * months -- not every month ever recorded. Older months load on demand (loadYear).
  */
 
 import { ConflictError } from './github.js';
@@ -35,18 +45,43 @@ export const PRIORITIES = Object.freeze(['low', 'normal', 'high', 'urgent']);
 const STATUS_LABEL = new Map(STATUSES.map((s) => [s.id, s.label]));
 export const statusLabel = (id) => STATUS_LABEL.get(id) || id;
 
-const PATHS = {
+/**
+ * Where everything lives. Year directories are not decoration: they are what keeps
+ * the repo navigable by hand, and they give each year a README.md that GitHub
+ * renders automatically when you click into the folder.
+ */
+export const PATHS = {
   manifest: 'data/manifest.json',
   board: 'data/board.json',
+  boardMd: 'data/BOARD.md',
   changelog: 'CHANGELOG.md',
-  month: (m) => `data/log/${m}.json`,
+  logReadme: 'data/log/README.md',
+  month:      (m) => `data/log/${m.slice(0, 4)}/${m.slice(5, 7)}.json`,
+  monthMd:    (m) => `data/log/${m.slice(0, 4)}/${m.slice(5, 7)}.md`,
+  yearReadme: (y) => `data/log/${y}/README.md`,
+  // v1 wrote every month flat into data/log/. Still read, so an upgrade loses nothing.
+  legacyMonth: (m) => `data/log/${m}.json`,
 };
+
+/** How many recent months a boot reads when a checkpoint lets it read fewer. */
+const RECENT_MONTHS = 3;
+
+export const SCHEMA = 2;
 
 /* ---------- small helpers ------------------------------------------------ */
 
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthOf = (iso) => iso.slice(0, 7);
+const yearOf = (iso) => iso.slice(0, 4);
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const monthName = (m) => MONTH_NAMES[Number(m.slice(5, 7)) - 1] || m;
+/** Weekday by arithmetic, not by locale: no ICU dependency, same answer everywhere. */
+const weekdayOf = (date) => WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()];
 
 /**
  * n uniformly-random base36 characters.
@@ -89,17 +124,42 @@ export function unionEvents(...lists) {
   return sortEvents([...seen.values()]);
 }
 
+/**
+ * Is this event past the checkpoint, i.e. not already folded into the snapshot?
+ *
+ * Compares (ts, id) — the same total order sortEvents uses — rather than ts alone,
+ * because two events can share a millisecond and applying one twice would duplicate
+ * a note.
+ */
+export const afterThrough = (e, through) => !through
+  || e.ts > through.ts
+  || (e.ts === through.ts && String(e.id) > String(through.id));
+
 /* ---------- fold: events -> board state --------------------------------- */
 
 /**
  * Replay events into task state. Unknown-task references are skipped rather than
  * thrown, because a partially-synced peer may legitimately reference a task whose
  * creation event has not arrived yet; the next merge repairs it.
+ *
+ * `base` is an optional array of already-folded tasks (a checkpoint from
+ * data/board.json), so years of history need not be re-read to know the board.
+ * Base tasks are copied, never mutated: this runs on every render.
  */
-export function foldEvents(events) {
+export function foldEvents(events, { base = null } = {}) {
   const tasks = new Map();
   const summaries = {};
   let skipped = 0;
+
+  for (const t of base || []) {
+    if (!t || !t.id) continue;
+    tasks.set(t.id, { ...t, tags: [...(t.tags || [])], notes: (t.notes || []).map((n) => ({ ...n })) });
+  }
+
+  const noteKey = (n) => `${n.ts}|${n.text}`;
+  const seenNotes = new Set();
+  for (const t of tasks.values()) for (const n of t.notes) seenNotes.add(`${t.id}\u0000${noteKey(n)}`);
+  const resorted = new Set();
 
   for (const e of sortEvents(events)) {
     if (e.type === 'summary.set') {
@@ -134,9 +194,17 @@ export function foldEvents(events) {
         t.status = e.to;
         t.done = e.to === 'done' ? e.ts : null;
         break;
-      case 'task.note':
+      case 'task.note': {
+        // Notes are a SET, not a sequence: adding one twice must be a no-op. That is
+        // what lets a note be applied even when it predates the checkpoint, which is
+        // in turn what lets the snapshot drop old notes and the wiki fetch them back.
+        const key = `${t.id}\u0000${e.ts}|${e.text}`;
+        if (seenNotes.has(key)) break;
+        seenNotes.add(key);
         t.notes.push({ ts: e.ts, text: e.text });
+        resorted.add(t);
         break;
+      }
       case 'task.edit':
         for (const [k, v] of Object.entries(e.fields || {})) {
           if (['title', 'priority', 'tags', 'private', 'status'].includes(k)) t[k] = v;
@@ -149,10 +217,44 @@ export function foldEvents(events) {
         skipped++;
         continue;
     }
-    t.updated = e.ts;
+    // Max, not last-applied: a note recovered from an old month must not drag the
+    // task's timestamp backwards.
+    if (!t.updated || e.ts > t.updated) t.updated = e.ts;
   }
 
+  for (const t of resorted) t.notes.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+
   return { tasks, summaries, skipped };
+}
+
+/* ---------- the event files ---------------------------------------------- */
+
+/**
+ * Field order for a serialised event: what happened first, bookkeeping last.
+ * Stable order means a git diff shows the change, not a reshuffle.
+ */
+const EVENT_KEYS = ['ts', 'type', 'taskId', 'date', 'kind', 'title', 'status',
+  'from', 'to', 'priority', 'tags', 'private', 'text', 'fields', 'summary', 'model', 'id'];
+
+function orderEvent(e) {
+  const out = {};
+  for (const k of EVENT_KEYS) if (k in e) out[k] = e[k];
+  for (const k of Object.keys(e)) if (!(k in out)) out[k] = e[k];   // never drop a field
+  return out;
+}
+
+/**
+ * A month file, one event per line.
+ *
+ * Deliberately not JSON.stringify(…, null, 2): pretty-printing spreads one event over
+ * a dozen lines, so `git log -p` becomes unreadable at exactly the moment you want to
+ * read it. One line per event means one added line per change, and the file is still
+ * ordinary JSON that JSON.parse and GitHub's viewer handle.
+ */
+export function serialiseMonth(month, events) {
+  const lines = sortEvents(events).map((e) => `    ${JSON.stringify(orderEvent(e))}`);
+  const body = lines.length ? `\n${lines.join(',\n')}\n  ` : '';
+  return `{\n  "month": ${JSON.stringify(month)},\n  "count": ${lines.length},\n  "events": [${body}]\n}\n`;
 }
 
 /* ---------- human-readable rendering ------------------------------------ */
@@ -187,45 +289,315 @@ function buildCommitMessage(events, tasks) {
   return `${subject}\n\n${body}\n`;
 }
 
-function renderChangelog(events, tasks) {
+const groupByDay = (events) => {
   const byDay = new Map();
   for (const e of sortEvents(events)) {
     const d = e.ts.slice(0, 10);
     if (!byDay.has(d)) byDay.set(d, []);
     byDay.get(d).push(e);
   }
-  const days = [...byDay.keys()].sort().reverse(); // newest first: diffs append at top
+  return byDay;
+};
+
+/**
+ * One month, rendered. This is the file a human actually reads — GitHub renders it
+ * on click, private repo or not, with nothing installed and no Action configured.
+ * Newest day first, so the top of the file is the interesting part.
+ */
+export function renderMonthMd(month, events, tasks) {
+  const year = month.slice(0, 4);
+  const mm = month.slice(5, 7);
+  const byDay = groupByDay(events);
+  const days = [...byDay.keys()].sort().reverse();
+
+  const out = [
+    `# ${monthName(month)} ${year} — work log`,
+    '',
+    `[All years](../../../${PATHS.changelog}) · [${year}](README.md) · [Current board](../../BOARD.md) · [Raw events](${mm}.json)`,
+    '',
+    `_Generated from the event log. ${days.length} day${days.length === 1 ? '' : 's'} logged, `
+      + `${events.length} change${events.length === 1 ? '' : 's'}. Newest first._`,
+    '',
+  ];
+
+  if (!days.length) out.push('Nothing logged this month yet.', '');
+
+  for (const d of days) {
+    const all = byDay.get(d);
+    const sums = all.filter((e) => e.type === 'summary.set');
+    const rest = all.filter((e) => e.type !== 'summary.set');
+
+    out.push(`## ${d} — ${weekdayOf(d)}`, '');
+
+    for (const s of sums) {
+      if (s.summary?.headline) out.push(`**${s.kind} summary** — ${s.summary.headline}`, '');
+      for (const b of s.summary?.bullets || []) out.push(`- ${b.text}`);
+      if (s.summary?.bullets?.length) out.push('');
+      for (const r of s.summary?.risks || []) out.push(`- ⚠️ ${r}`);
+      if (s.summary?.risks?.length) out.push('');
+    }
+
+    if (rest.length) {
+      out.push('| Time | Change |', '| --- | --- |');
+      for (const e of rest) {
+        // Escape pipes so a note containing "|" cannot break the table.
+        out.push(`| ${e.ts.slice(11, 16)} | ${describeEvent(e, tasks).replace(/\|/g, '\\|')} |`);
+      }
+      out.push('');
+    }
+  }
+  return out.join('\n');
+}
+
+/**
+ * data/log/<year>/README.md — GitHub renders this the moment you browse into the
+ * year folder, which is the whole trick behind "readable without doing anything".
+ */
+export function renderYearReadme(year, stats) {
+  const rows = stats.filter((s) => s.month.startsWith(`${year}-`)).sort((a, b) => b.month.localeCompare(a.month));
+  const total = rows.reduce((n, s) => n + (s.events || 0), 0);
+  const days = rows.reduce((n, s) => n + (s.days || 0), 0);
+
+  const out = [
+    `# ${year} — work log`,
+    '',
+    `[All years](../../../${PATHS.changelog}) · [Current board](../../BOARD.md)`,
+    '',
+    `_${days} day${days === 1 ? '' : 's'} logged, ${total} change${total === 1 ? '' : 's'} this year. Newest month first._`,
+    '',
+    '| Month | Days logged | Changes | Read | Raw |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const s of rows) {
+    const mm = s.month.slice(5, 7);
+    out.push(`| ${monthName(s.month)} | ${s.days ?? '—'} | ${s.events ?? '—'} | [${mm}.md](${mm}.md) | [${mm}.json](${mm}.json) |`);
+  }
+  out.push('', 'Each `.json` is the append-only event log for that month — the source of truth.',
+    'Each `.md` is the same month rendered for reading. Both are committed; neither needs tooling.', '');
+  return out.join('\n');
+}
+
+/**
+ * Root CHANGELOG.md — an index, not the history.
+ *
+ * v1 rendered every event ever into this one file and rewrote it on every push. That
+ * does not survive years: the file grows without bound, GitHub stops rendering large
+ * markdown, and the diff on every push is the size of your whole career. Now it links
+ * to per-month files, so it stays a page long no matter how long you use this.
+ */
+export function renderChangelogIndex(stats) {
+  const byYear = new Map();
+  for (const s of stats) {
+    const y = yearOf(s.month);
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(s);
+  }
+  const years = [...byYear.keys()].sort().reverse();
+
   const out = [
     '# Work log changelog',
     '',
-    '_Generated from the event log. Newest first._',
+    `**Current board:** [${PATHS.boardMd}](${PATHS.boardMd}) · **How this is laid out:** [${PATHS.logReadme}](${PATHS.logReadme})`,
+    '',
+    '_An index. Every month is a rendered page you can click straight to; the JSON beside it is the source._',
     '',
   ];
-  for (const d of days) {
-    out.push(`## ${d}`, '');
-    const sums = [];
-    for (const e of byDay.get(d)) {
-      if (e.type === 'summary.set') { sums.push(e); continue; }
-      out.push(`- ${describeEvent(e, tasks)}`);
-    }
-    for (const s of sums) {
-      if (s.summary?.headline) out.push('', `**${s.kind} summary:** ${s.summary.headline}`);
-      for (const b of s.summary?.bullets || []) out.push(`  - ${b.text}`);
+
+  if (!years.length) out.push('Nothing logged yet.', '');
+
+  for (const y of years) {
+    const rows = byYear.get(y).sort((a, b) => b.month.localeCompare(a.month));
+    const total = rows.reduce((n, s) => n + (s.events || 0), 0);
+    out.push(`## ${y} — ${total} change${total === 1 ? '' : 's'} · [year index](data/log/${y}/)`, '',
+      '| Month | Days | Changes | | |', '| --- | --- | --- | --- | --- |');
+    for (const s of rows) {
+      out.push(`| ${s.month} | ${s.days ?? '—'} | ${s.events ?? '—'} `
+        + `| [read](${PATHS.monthMd(s.month)}) | [json](${PATHS.month(s.month)}) |`);
     }
     out.push('');
   }
   return out.join('\n');
 }
 
-/** Snapshot of live state. Pretty-printed and key-sorted so diffs stay legible. */
-function renderBoard(tasks) {
+/** Explains the layout to whoever opens the folder, including future you. Static. */
+export function renderLogReadme() {
+  return `# Event log
+
+Your work, append-only, one file per month:
+
+\`\`\`
+data/log/<year>/<month>.json    the events -- the source of truth
+data/log/<year>/<month>.md      the same month, rendered to read
+data/log/<year>/README.md       that year's index (this page, one level down)
+\`\`\`
+
+Nothing here is generated by CI. Both files are committed together on every push, so
+browsing this repo on GitHub — public or private — shows readable history with nothing
+installed and no Action to configure.
+
+## Why monthly
+
+One file per month keeps every diff about a month of work rather than about your whole
+history, so \`git log -p\` stays readable and the files stay small however many years
+accumulate. \`data/board.json\` is a snapshot of the current board and doubles as a
+checkpoint, which is why the app can open your board without reading every past month.
+
+## Reading it
+
+\`\`\`sh
+git log --oneline                                    # one entry per push
+git log -p data/log/$(date +%Y)/$(date +%m).json     # this month's events, in detail
+git log --follow -p -- data/log                      # everything, oldest last
+\`\`\`
+
+One event per line is on purpose: a new change shows up as one added line.
+`;
+}
+
+/**
+ * data/BOARD.md — the board as a page.
+ *
+ * Done is capped: completed work is history and history lives in the monthly files,
+ * so this file stays a readable page instead of growing for years.
+ */
+const DONE_SHOWN = 15;
+
+export function renderBoardMd(tasks) {
+  const live = [...tasks.values()].filter((t) => !t.deleted);
+  const open = live.filter((t) => t.status !== 'done');
+  const out = [
+    '# Board',
+    '',
+    // BOARD.md lives in data/, so links are relative to that: the changelog is one
+    // level up, the month is a sibling subtree.
+    `[Changelog](../${PATHS.changelog}) · [This month](${PATHS.monthMd(monthOf(todayISO())).replace('data/', '')})`,
+    '',
+    `_Generated on each push, ${todayISO()}. ${open.length} open, ${live.length - open.length} done._`,
+    '',
+  ];
+
+  for (const s of STATUSES) {
+    let col = live.filter((t) => t.status === s.id);
+    if (!col.length) continue;
+    const total = col.length;
+
+    if (s.id === 'done') {
+      col = col.sort((a, b) => String(b.done || b.updated).localeCompare(String(a.done || a.updated))).slice(0, DONE_SHOWN);
+      out.push(`## ${s.label} (${total})`, '');
+    } else {
+      col = col.sort((a, b) => PRIORITIES.indexOf(b.priority) - PRIORITIES.indexOf(a.priority));
+      out.push(`## ${s.label} (${total})`, '');
+    }
+
+    for (const t of col) {
+      const bits = [`\`${t.id}\``];
+      if (t.priority && t.priority !== 'normal') bits.push(t.priority);
+      if (t.tags?.length) bits.push(t.tags.map((g) => `#${g}`).join(' '));
+      bits.push(`updated ${String(t.updated).slice(0, 10)}`);
+      out.push(`- **${String(t.title).replace(/\n/g, ' ')}** · ${bits.join(' · ')}`);
+      const last = t.notes?.[t.notes.length - 1];
+      if (last) out.push(`  - _${String(last.ts).slice(0, 10)}_: ${String(last.text).replace(/\n/g, ' ')}`);
+    }
+    if (s.id === 'done' && total > DONE_SHOWN) {
+      out.push('', `_…and ${total - DONE_SHOWN} more finished earlier. See [the changelog](../${PATHS.changelog})._`);
+    }
+    out.push('');
+  }
+
+  if (!live.length) out.push('No tasks yet.', '');
+  return out.join('\n');
+}
+
+/**
+ * How long a finished task keeps its notes in the snapshot. Past this the task is
+ * still listed in full -- so reopening it works and it never vanishes -- but its notes
+ * are left in the monthly log, which is where they are already committed.
+ */
+const NOTES_KEPT_DAYS = 90;
+
+/**
+ * Snapshot of live state, and the load checkpoint.
+ *
+ * `through` names the last event folded in here, which is what lets a boot skip
+ * reading every past month: state = these tasks + events after `through`.
+ *
+ * Notes on long-finished tasks are trimmed rather than carried forever, because this
+ * file is downloaded on every boot and rewritten on every push. Without trimming it
+ * grows past GitHub's 500 KB / 20,000-line diff limit within a few years -- I measured
+ * 931 KB at three years of daily use. `noteCount` records what was left behind so the
+ * UI can say so and offer to fetch it, and fold() applies recovered notes idempotently.
+ */
+export function renderBoardSnapshot(tasks, through) {
+  const cutoff = new Date(Date.now() - NOTES_KEPT_DAYS * 86400000).toISOString();
   const live = [...tasks.values()].filter((t) => !t.deleted)
     .sort((a, b) => STATUSES.findIndex((s) => s.id === a.status) - STATUSES.findIndex((s) => s.id === b.status)
-      || (a.created < b.created ? -1 : 1));
-  return `${JSON.stringify({
+      || (a.created < b.created ? -1 : 1))
+    .map((t) => {
+      const stale = t.status === 'done' && String(t.done || t.updated) < cutoff;
+      if (!stale || !t.notes?.length) return t;
+      return { ...t, notes: [], noteCount: t.notes.length };
+    });
+
+  const head = JSON.stringify({
+    schema: SCHEMA,
     generated: new Date().toISOString(),
+    through: through ? { ts: through.ts, id: through.id } : null,
     counts: STATUSES.reduce((m, s) => (m[s.id] = live.filter((t) => t.status === s.id).length, m), {}),
-    tasks: live,
+  }, null, 2);
+
+  const lines = live.map((t) => `    ${JSON.stringify(slimTask(t))}`);
+  const body = lines.length ? `\n${lines.join(',\n')}\n  ` : '';
+  return `${head.slice(0, -2)},\n  "tasks": [${body}]\n}\n`;
+}
+
+/**
+ * A task, ready to serialise on one line.
+ *
+ * One line per task is the same bargain as one line per event: a changed task is a
+ * one-line diff instead of a twelve-line reshuffle, and the file stays under GitHub's
+ * 20,000-line diff limit for decades rather than years. Fields that fold() defaults
+ * anyway (empty tags, no notes, not private, not deleted) are left out; unrecognised
+ * fields are always kept, so a future version's data survives a round trip here.
+ */
+const TASK_KEYS = ['id', 'title', 'status', 'priority', 'tags', 'created', 'updated',
+  'done', 'private', 'deleted', 'notes', 'noteCount'];
+
+function slimTask(t) {
+  const out = {};
+  for (const k of TASK_KEYS) {
+    const v = t[k];
+    if (v == null) continue;
+    if (k === 'private' || k === 'deleted') { if (v) out[k] = true; continue; }
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  for (const k of Object.keys(t)) if (!TASK_KEYS.includes(k) && t[k] != null) out[k] = t[k];
+  return out;
+}
+
+/* ---------- the manifest ------------------------------------------------- */
+
+/**
+ * The manifest is the index that makes a lazy boot possible: it lists every month
+ * with its size, so the app (and the rendered pages) can describe history it has not
+ * read. v1 listed bare month strings; those still load, just without counts.
+ */
+function readManifest(manifest) {
+  const stats = new Map();
+  for (const entry of manifest?.months || []) {
+    const s = typeof entry === 'string' ? { month: entry } : { ...entry };
+    if (!s.month) continue;
+    stats.set(s.month, s);
+  }
+  return stats;
+}
+
+export function renderManifest(stats) {
+  return `${JSON.stringify({
+    schema: SCHEMA,
+    app: 'worklog',
+    updated: new Date().toISOString(),
+    months: [...stats.values()].sort((a, b) => a.month.localeCompare(b.month)),
   }, null, 2)}\n`;
 }
 
@@ -234,9 +606,14 @@ function renderBoard(tasks) {
 export class Store {
   constructor(repo) {
     this.repo = repo;
-    this.remoteEvents = [];   // as last read from the repo
+    this.remoteEvents = [];   // months actually read, as last seen in the repo
     this.pending = [];        // staged locally, NOT yet published
-    this.months = [];
+    this.knownMonths = [];    // every month the manifest knows about
+    this.loadedMonths = [];   // the subset we have read
+    this.monthStats = new Map();
+    this.checkpoint = null;   // {through:{ts,id}, tasks:[…]} from data/board.json
+    this.legacyMonths = [];   // months found only at their v1 flat path
+    this.manifestSchema = SCHEMA;
     this.loaded = false;
     this._pendingKey = `worklog.pending.${repo.owner}/${repo.repo}`;
     this._restorePending();
@@ -268,9 +645,26 @@ export class Store {
 
   get hasPending() { return this.pending.length > 0; }
 
-  /** Current view of the world = published events plus anything staged locally. */
+  /** Months our staged events belong to — the only month files a push may rewrite. */
+  get touchedMonths() {
+    return [...new Set(this.pending.map((e) => monthOf(e.ts)))].sort();
+  }
+
+  /**
+   * Current view of the world = the checkpoint, plus every event after it that we
+   * have (published or staged). Events at or before the checkpoint are dropped
+   * because they are already folded into it.
+   */
   get state() {
-    return foldEvents(unionEvents(this.remoteEvents, this.pending));
+    const all = unionEvents(this.remoteEvents, this.pending);
+    const through = this.checkpoint?.through || null;
+    // Status and edits are order-dependent, so replaying ones the snapshot already
+    // folded in would regress them. Notes are not: they de-duplicate, so an old month
+    // loaded later restores notes the snapshot trimmed.
+    return foldEvents(
+      all.filter((e) => e.type === 'task.note' || afterThrough(e, through)),
+      { base: this.checkpoint?.tasks },
+    );
   }
 
   get tasks() {
@@ -279,18 +673,60 @@ export class Store {
 
   /* --- reading --- */
 
-  async load() {
+  /**
+   * Read enough to show the board. With a checkpoint that is the manifest, the
+   * snapshot and the last few months; without one it falls back to reading
+   * everything, which is what a v1 repo needs on its first load.
+   */
+  async load({ recent = RECENT_MONTHS } = {}) {
     const manifest = await this._readJSON(PATHS.manifest);
-    this.months = manifest?.months || [];
+    this.monthStats = readManifest(manifest);
+    this.manifestSchema = Number(manifest?.schema) || 1;
 
     // Always include the current month, even on a repo that has never been written.
     const cur = monthOf(todayISO());
-    if (!this.months.includes(cur)) this.months = [...this.months, cur];
+    if (!this.monthStats.has(cur)) this.monthStats.set(cur, { month: cur });
+    this.knownMonths = [...this.monthStats.keys()].sort();
 
-    const files = await Promise.all(this.months.map((m) => this._readJSON(PATHS.month(m))));
-    this.remoteEvents = unionEvents(...files.map((f) => f?.events || []));
+    const snap = await this._readJSON(PATHS.board);
+    this.checkpoint = snap?.through?.ts && Array.isArray(snap.tasks)
+      ? { through: snap.through, tasks: snap.tasks }
+      : null;
+
+    this.remoteEvents = [];
+    this.loadedMonths = [];
+    this.legacyMonths = [];
+    await this.loadMonths(this.checkpoint ? this.knownMonths.slice(-recent) : this.knownMonths);
     this.loaded = true;
     return this;
+  }
+
+  /** Read months we have not read yet and merge them in. Safe to call repeatedly. */
+  async loadMonths(months) {
+    const todo = [...new Set(months)].filter((m) => m && !this.loadedMonths.includes(m));
+    if (!todo.length) return this;
+    const files = await Promise.all(todo.map((m) => this._readMonth(m)));
+    this.remoteEvents = unionEvents(this.remoteEvents, ...files.map((f) => f?.events || []));
+    this.loadedMonths = [...this.loadedMonths, ...todo].sort();
+    return this;
+  }
+
+  loadYear(year) { return this.loadMonths(this.knownMonths.filter((m) => m.startsWith(`${year}-`))); }
+  loadAll() { return this.loadMonths(this.knownMonths); }
+
+  get years() { return [...new Set(this.knownMonths.map(yearOf))].sort().reverse(); }
+  yearLoaded(year) { return this.knownMonths.filter((m) => m.startsWith(`${year}-`)).every((m) => this.loadedMonths.includes(m)); }
+  get fullyLoaded() { return this.knownMonths.every((m) => this.loadedMonths.includes(m)); }
+
+  /** Month files moved into year folders in v2; fall back to the flat v1 path. */
+  async _readMonth(month) {
+    const current = await this._readJSON(PATHS.month(month));
+    if (current) return current;
+    // Fall back to where v1 put it. Recording that here is what lets the UI offer an
+    // upgrade: a repo written by v1 loads correctly, it just is not laid out well.
+    const legacy = await this._readJSON(PATHS.legacyMonth(month));
+    if (legacy && !this.legacyMonths.includes(month)) this.legacyMonths.push(month);
+    return legacy;
   }
 
   async _readJSON(path) {
@@ -308,32 +744,147 @@ export class Store {
   /**
    * Describe the commit that push() would make. Purely local; safe to call freely.
    * The UI shows this for confirmation, because nothing goes to the repo unasked.
+   *
+   * Every file here is bounded by one month of work or by the current board, so the
+   * commit is the same size in year five as in week one.
    */
-  previewCommit() {
-    if (!this.hasPending) return null;
+  /* --- upgrading a repo written by an older version --------------------- */
+
+  /**
+   * Does this repo predate the current layout?
+   *
+   * A v1 repo is not broken -- v1 wrote no `through` marker, so load() reads every
+   * month and the board comes out complete and correct. What it lacks is the layout:
+   * months sit flat in data/log/, nothing is rendered as markdown, and CHANGELOG.md
+   * holds the whole history in one file. So this is an offer, never a requirement,
+   * and nothing here runs until the user asks for it.
+   */
+  get needsMigration() {
+    return this.loaded && (this.legacyMonths.length > 0 || this.manifestSchema < SCHEMA);
+  }
+
+  /**
+   * The upgrade commit: every month rewritten into its year directory with a rendered
+   * page beside it, fresh indexes, and the old flat files removed in the same commit.
+   *
+   * Unlike previewCommit() this is deliberately proportional to the whole history --
+   * it is a one-off, and it is the only way to render months written before the
+   * renderers existed. It needs the full history loaded first, because rewriting a
+   * month from a partial read would drop events.
+   */
+  migrationCommit() {
+    if (!this.needsMigration) return null;
+    if (!this.fullyLoaded) throw new Error('Load the full history before upgrading: this rewrites every month.');
+
     const merged = unionEvents(this.remoteEvents, this.pending);
+    const through = merged[merged.length - 1] || null;
     const { tasks } = foldEvents(merged);
-    const touchedMonths = [...new Set(this.pending.map((e) => monthOf(e.ts.slice(0, 10))))];
+
+    const months = [...new Set(merged.map((e) => monthOf(e.ts)))].sort();
+    const stats = new Map();
+    const eventsIn = new Map();
+    for (const m of months) {
+      const evs = merged.filter((e) => monthOf(e.ts) === m);
+      eventsIn.set(m, evs);
+      stats.set(m, {
+        month: m,
+        events: evs.length,
+        days: new Set(evs.map((e) => e.ts.slice(0, 10))).size,
+        updated: new Date().toISOString(),
+      });
+    }
+    const statList = [...stats.values()];
+    const years = [...new Set(months.map(yearOf))];
 
     const files = [
-      ...touchedMonths.map((m) => ({
-        path: PATHS.month(m),
-        text: `${JSON.stringify({
-          month: m,
-          events: merged.filter((e) => monthOf(e.ts.slice(0, 10)) === m),
-        }, null, 2)}\n`,
-      })),
-      { path: PATHS.board, text: renderBoard(tasks) },
-      { path: PATHS.changelog, text: renderChangelog(merged, tasks) },
-      {
-        path: PATHS.manifest,
-        text: `${JSON.stringify({
-          schema: 1,
-          app: 'worklog',
-          months: [...new Set([...this.months, ...touchedMonths])].sort(),
-          updated: new Date().toISOString(),
-        }, null, 2)}\n`,
-      },
+      ...months.flatMap((m) => [
+        { path: PATHS.month(m),   text: serialiseMonth(m, eventsIn.get(m)) },
+        { path: PATHS.monthMd(m), text: renderMonthMd(m, eventsIn.get(m), tasks) },
+      ]),
+      ...years.map((y) => ({ path: PATHS.yearReadme(y), text: renderYearReadme(y, statList) })),
+      { path: PATHS.board,     text: renderBoardSnapshot(tasks, through) },
+      { path: PATHS.boardMd,   text: renderBoardMd(tasks) },
+      { path: PATHS.changelog, text: renderChangelogIndex(statList) },
+      { path: PATHS.logReadme, text: renderLogReadme() },
+      { path: PATHS.manifest,  text: renderManifest(stats) },
+    ];
+
+    // Only ever delete a flat file whose events this same commit writes elsewhere.
+    const deletions = this.legacyMonths
+      .filter((m) => months.includes(m))
+      .map((m) => PATHS.legacyMonth(m))
+      .filter((path) => !files.some((f) => f.path === path));
+
+    const s = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const message = `worklog: upgrade data layout to schema ${SCHEMA}
+
+Months move into per-year directories with a rendered page beside each one, so this
+repo reads as markdown on GitHub with nothing installed and no Action. CHANGELOG.md
+becomes an index, and data/board.json becomes a checkpoint so opening the app no
+longer reads every month ever written.
+
+${s(months.length, 'month')} rewritten, ${s(deletions.length, 'old file')} removed, ${s(merged.length, 'event')} preserved unchanged.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+`;
+
+    return { files, deletions, message, months, count: merged.length };
+  }
+
+  /**
+   * Perform the upgrade. Call only after the user has seen migrationCommit().
+   * No event is altered, so this is safe to retry and safe to skip.
+   */
+  async migrate() {
+    if (!this.fullyLoaded) await this.loadAll();
+    const plan = this.migrationCommit();
+    if (!plan) return null;
+    const res = await this.repo.commitFiles(plan.files, plan.message, { deletions: plan.deletions });
+    await this.load();
+    return res;
+  }
+
+  previewCommit() {
+    if (!this.hasPending) return null;
+
+    const touched = this.touchedMonths;
+    const unread = touched.filter((m) => this.loadedMonths.length && !this.loadedMonths.includes(m));
+    if (unread.length) {
+      // Rewriting a month we never read would drop its events. push() loads them first.
+      throw new Error(`Cannot build a commit: ${unread.join(', ')} has not been read from the repo yet.`);
+    }
+
+    const merged = unionEvents(this.remoteEvents, this.pending);
+    const through = merged[merged.length - 1] || null;
+    const { tasks } = foldEvents(merged.filter((e) => afterThrough(e, this.checkpoint?.through)), { base: this.checkpoint?.tasks });
+
+    // Month stats, refreshed for what we touched and carried over for what we did not.
+    const stats = new Map([...this.monthStats].map(([m, s]) => [m, { ...s }]));
+    const eventsIn = new Map();
+    for (const m of touched) {
+      const evs = merged.filter((e) => monthOf(e.ts) === m);
+      eventsIn.set(m, evs);
+      stats.set(m, {
+        month: m,
+        events: evs.length,
+        days: new Set(evs.map((e) => e.ts.slice(0, 10))).size,
+        updated: new Date().toISOString(),
+      });
+    }
+    const statList = [...stats.values()].sort((a, b) => a.month.localeCompare(b.month));
+    const touchedYears = [...new Set(touched.map(yearOf))];
+
+    const files = [
+      ...touched.flatMap((m) => [
+        { path: PATHS.month(m),   text: serialiseMonth(m, eventsIn.get(m)) },
+        { path: PATHS.monthMd(m), text: renderMonthMd(m, eventsIn.get(m), tasks) },
+      ]),
+      ...touchedYears.map((y) => ({ path: PATHS.yearReadme(y), text: renderYearReadme(y, statList) })),
+      { path: PATHS.board,     text: renderBoardSnapshot(tasks, through) },
+      { path: PATHS.boardMd,   text: renderBoardMd(tasks) },
+      { path: PATHS.changelog, text: renderChangelogIndex(statList) },
+      { path: PATHS.logReadme, text: renderLogReadme() },
+      { path: PATHS.manifest,  text: renderManifest(stats) },
     ];
 
     return {
@@ -354,18 +905,26 @@ export class Store {
   async push({ retries = 3 } = {}) {
     if (!this.hasPending) return null;
 
+    // A month we are about to rewrite must be read first, or we would truncate it.
+    if (this.loaded) await this.loadMonths(this.touchedMonths);
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       const preview = this.previewCommit();
       try {
         const res = await this.repo.commitFiles(preview.files, preview.message);
         // Staged events are now published; fold them into the remote baseline.
         this.remoteEvents = unionEvents(this.remoteEvents, this.pending);
-        this.months = [...new Set([...this.months, ...this.pending.map((e) => monthOf(e.ts.slice(0, 10)))])].sort();
+        for (const m of this.touchedMonths) {
+          if (!this.monthStats.has(m)) this.monthStats.set(m, { month: m });
+          if (!this.loadedMonths.includes(m)) this.loadedMonths = [...this.loadedMonths, m].sort();
+        }
+        this.knownMonths = [...new Set([...this.knownMonths, ...this.touchedMonths])].sort();
         this.discardPending();
         return res;
       } catch (err) {
         if (!(err instanceof ConflictError) || attempt === retries) throw err;
         await this.load();               // pull peer's events, then rebuild and retry
+        await this.loadMonths(this.touchedMonths);
         await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
       }
     }

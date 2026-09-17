@@ -283,11 +283,14 @@ export class GitHubRepo {
    *
    * @param {Array<{path:string, text:string}>} files
    * @param {string} message
+   * @param {string[]} [opts.deletions] paths to remove in the same commit. Used by the
+   *   layout migration, so moving a file is one atomic commit rather than a write
+   *   followed by a delete that might not happen.
    * @throws {ConflictError} when the branch advanced while we were building the commit
    */
-  async commitFiles(files, message) {
+  async commitFiles(files, message, { deletions = [] } = {}) {
     if (!this.token) throw new AuthError('A GitHub token is required to save changes.');
-    if (!files.length) return null;
+    if (!files.length && !deletions.length) return null;
 
     const ref = `heads/${this.branch}`;
 
@@ -306,7 +309,11 @@ export class GitHubRepo {
       method: 'POST',
       body: JSON.stringify({
         base_tree: parentCommit.tree.sha,
-        tree: files.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.text })),
+        tree: [
+          ...files.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.text })),
+          // A null sha against an existing path is how the Git Data API says "remove".
+          ...deletions.map((path) => ({ path, mode: '100644', type: 'blob', sha: null })),
+        ],
       }),
     });
 
