@@ -477,6 +477,42 @@ check('every link in the rendered pages stays inside the repo', () => {
 print('\n--- migrating a repo written by v1 ---');
 
 /** A repo laid out the way v1 wrote it: flat months, bare manifest, no checkpoint. */
+/**
+ * A repo where the newest event is a summary -- exactly the shape you get by writing
+ * an evening summary and publishing it, since the summary is then the checkpoint.
+ */
+function repoWithSummary() {
+  const events = [
+    ev('2026-09-17T09:00:00.000Z', 'task.create', { taskId: T1, title: 'ship the thing', status: 'in_progress' }),
+    ev('2026-09-17T17:00:00.000Z', 'summary.set', {
+      date: '2026-09-17',
+      kind: 'evening',
+      summary: { headline: 'shipped it', bullets: [{ text: 'done', taskIds: [T1] }] },
+    }),
+  ];
+  const { tasks } = foldEvents(events);
+  const through = events[events.length - 1];
+  return memRepo({
+    'data/manifest.json': JSON.stringify({
+      schema: 2, app: 'worklog', months: [{ month: '2026-09', events: events.length, days: 1 }],
+    }),
+    'data/log/2026/09.json': serialiseMonth('2026-09', events),
+    'data/board.json': renderBoardSnapshot(tasks, through),
+  });
+}
+
+await checkAsync('a summary survives being the checkpoint', async () => {
+  // The snapshot stores tasks, not summaries, so a summary that is at or before the
+  // checkpoint has to be replayed or it is gone from the UI while still in the log.
+  localStorage.clear();
+  const s = new Store(repoWithSummary());
+  await s.load();
+  const today = s.state.summaries['2026-09-17'];
+  ok(today, 'no summaries at all for the day the summary was written');
+  ok(today.evening, 'the evening summary is in the log but not in the folded state');
+  eq(today.evening.headline, 'shipped it');
+});
+
 function v1Repo() {
   const aug = [
     ev('2026-08-11T09:00:00.000Z', 'task.create', { taskId: T1, title: 'v1 task', status: 'todo' }),

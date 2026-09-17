@@ -660,9 +660,12 @@ export class Store {
     const through = this.checkpoint?.through || null;
     // Status and edits are order-dependent, so replaying ones the snapshot already
     // folded in would regress them. Notes are not: they de-duplicate, so an old month
-    // loaded later restores notes the snapshot trimmed.
+    // loaded later restores notes the snapshot trimmed. Summaries are the same kind of
+    // thing -- keyed by (date, kind), newest wins -- and the snapshot does not carry
+    // them at all, so they must be replayed or a published summary vanishes from the
+    // UI while still sitting in the log.
     return foldEvents(
-      all.filter((e) => e.type === 'task.note' || afterThrough(e, through)),
+      all.filter((e) => e.type === 'task.note' || e.type === 'summary.set' || afterThrough(e, through)),
       { base: this.checkpoint?.tasks },
     );
   }
