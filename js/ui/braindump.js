@@ -7,6 +7,7 @@
  */
 import { statusLabel } from '../store.js';
 import { proposeOperations, opsToEvents, AIError } from '../ai.js';
+import { endpointProblem } from '../providers.js';
 import { el, clear, notice, spinner, toast, plural } from './dom.js';
 
 const PLACEHOLDER = `Finished the retry logic and pushed it for review.
@@ -22,6 +23,9 @@ export class BraindumpView {
     this.proposals = null;      // null = not asked yet, [] = asked and nothing came back
     this.busy = false;
     this.error = null;
+    // Reused across renders so a model download can report progress without the
+    // re-render wiping what you were typing.
+    this.progressEl = el('div', { class: 'hint' });
   }
 
   render() {
@@ -50,7 +54,8 @@ export class BraindumpView {
       this.error ? notice('error', this.error) : null,
       el('div', { class: 'row', style: 'justify-content:flex-end' },
         el('span', { class: 'spacer' }),
-        this.busy ? spinner('Reading your update…') : go)));
+        this.busy ? spinner('Reading your update…') : go),
+      this.busy ? this.progressEl : null));
 
     if (this.proposals) this.root.append(this.reviewCard());
     return this.root;
@@ -58,21 +63,25 @@ export class BraindumpView {
 
   async interpret() {
     if (!this.text.trim()) { toast('Write an update first.'); return; }
-    const token = this.app.tokens.hf;
-    if (!token) { this.error = 'No Hugging Face token set. Add one in Settings.'; this.app.refresh(); return; }
+    const endpoint = this.app.endpoint;
+    const problem = endpointProblem(endpoint);
+    if (problem) { this.error = problem; this.app.refresh(); return; }
 
     this.busy = true;
     this.error = null;
     this.proposals = null;
+    this.progressEl.textContent = '';
     this.app.refresh();
 
     try {
       const ops = await proposeOperations({
-        token,
-        model: this.app.settings.model,
+        endpoint,
         tasks: this.app.tasks,
         text: this.text,
         includeNotes: this.app.settings.sendNotes,
+        onProgress: ({ text, progress }) => {
+          this.progressEl.textContent = `${text}${progress ? ` (${Math.round(progress * 100)}%)` : ''}`;
+        },
       });
       this.proposals = ops.map((op) => ({ op, keep: true }));
       if (!ops.length) this.error = 'The AI did not find any board changes in that. Try being more specific about what moved.';

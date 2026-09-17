@@ -19,7 +19,8 @@ export function welcomeDialog() {
       el('ul', {},
         el('li', {}, el('strong', { text: 'You own the data.' }), ' Tasks are committed as plain JSON to your repo — private or public, your choice.'),
         el('li', {}, el('strong', { text: 'Nothing is published without asking.' }), ' Edits stage locally; you see the exact commit before it goes.'),
-        el('li', {}, el('strong', { text: 'The AI is optional.' }), ' It drafts summaries and turns notes into board changes, but every change is yours to approve.')),
+        el('li', {}, el('strong', { text: 'The AI is optional, and you choose how much it sees.' }),
+          ' Off entirely, running on your own machine, an open model in the cloud, or your own API key — and every change it proposes is yours to approve.')),
       el('p', { class: 'sub' }, 'Next you will point this at a data repo and paste a GitHub token. No repo yet? It can create one for you.'),
     ),
     buttons: [{ label: 'Get started', class: 'primary', value: true }],
@@ -38,7 +39,7 @@ export async function unlockDialog() {
   const { done, close } = dialog({
     title: 'Unlock your tokens',
     body: el('div', {},
-      el('p', { class: 'sub', text: 'Your GitHub and Hugging Face tokens are encrypted in this browser.' }),
+      el('p', { class: 'sub', text: 'Your GitHub token and any AI provider keys are encrypted in this browser.' }),
       el('div', { class: 'field' }, el('label', { text: 'Passphrase' }), pass), err),
     buttons: [
       { label: 'Skip (read-only)', value: 'skip' },
@@ -63,7 +64,7 @@ export async function unlockDialog() {
   setTimeout(() => pass.focus(), 50);
 
   const result = await done;
-  if (!result || result === 'skip') return { tokens: { githubToken: null, hfToken: null }, passphrase: null, skipped: true };
+  if (!result || result === 'skip') return { tokens: { githubToken: null, aiTokens: {} }, passphrase: null, skipped: true };
   return { tokens: result.tokens, passphrase: result.passphrase };
 }
 

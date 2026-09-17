@@ -9,6 +9,7 @@
  */
 import { todayISO } from '../store.js';
 import { summarise, summaryEvent, AIError } from '../ai.js';
+import { endpointProblem } from '../providers.js';
 import { el, clear, notice, spinner, toast, shortTime } from './dom.js';
 
 export class SummaryView {
@@ -17,6 +18,7 @@ export class SummaryView {
     this.root = el('div', { class: 'view-narrow' });
     this.busy = null;          // 'morning' | 'evening' while generating
     this.error = null;
+    this.progressEl = el('div', { class: 'hint' });   // model download progress
   }
 
   render() {
@@ -33,7 +35,7 @@ export class SummaryView {
       el('div', { class: 'row', style: 'margin-top:12px' },
         this.button('morning', 'Morning summary', forToday.morning),
         this.button('evening', 'Evening summary', forToday.evening)),
-      this.busy ? el('div', { style: 'margin-top:12px' }, spinner('Reading your log…')) : null));
+      this.busy ? el('div', { style: 'margin-top:12px' }, spinner('Reading your log…'), this.progressEl) : null));
 
     for (const kind of ['evening', 'morning']) {
       if (forToday[kind]) this.root.append(this.panel(kind, forToday[kind]));
@@ -101,25 +103,29 @@ export class SummaryView {
   }
 
   async generate(kind) {
-    const token = this.app.tokens.hf;
-    if (!token) { this.error = 'No Hugging Face token set. Add one in Settings.'; this.app.refresh(); return; }
+    const endpoint = this.app.endpoint;
+    const problem = endpointProblem(endpoint);
+    if (problem) { this.error = problem; this.app.refresh(); return; }
 
     this.busy = kind;
     this.error = null;
+    this.progressEl.textContent = '';
     this.app.refresh();
 
     const today = todayISO();
     try {
       const summary = await summarise({
-        token,
-        model: this.app.settings.model,
+        endpoint,
         tasks: this.app.tasks,
         events: this.app.state.events,
         kind,
         previous: this.app.state.summaries[today]?.[kind === 'evening' ? 'morning' : 'evening'] || null,
         includeNotes: this.app.settings.sendNotes,
+        onProgress: ({ text, progress }) => {
+          this.progressEl.textContent = `${text}${progress ? ` (${Math.round(progress * 100)}%)` : ''}`;
+        },
       });
-      this.app.stage(summaryEvent({ date: today, kind, summary, model: this.app.settings.model }));
+      this.app.stage(summaryEvent({ date: today, kind, summary, model: endpoint.model }));
       toast('Summary written. It publishes with your next push.');
     } catch (e) {
       this.error = e instanceof AIError ? e.message : `Unexpected failure: ${e.message}`;
