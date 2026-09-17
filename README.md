@@ -27,9 +27,10 @@ sideways.
 
 ## The daily loop
 
-Not ready to make a token? `?demo=1` loads a week of invented work into an in-memory board. Drag
-cards, open the wiki, read the summary; nothing is saved and nothing is sent anywhere.
-
+Setup is two things — a repo to keep your log in and a GitHub token so the app can write to it —
+and [SETUP.md](SETUP.md) walks both in about two minutes. The [demo board](https://tanmayagrawal21.github.io/worklog/?demo=1)
+is there if you want to see the loop running first; it is the same code over invented data, with a
+built-in interpreter standing in for the model, so the brain dump and the summary work there too.
 
 1. Open the app. Read the morning summary of where things stand.
 2. Either **drag cards** on the board, or **brain-dump a paragraph** and let the AI propose
