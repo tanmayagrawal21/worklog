@@ -109,6 +109,17 @@ export class GitHubRepo {
     if (!res.ok) throw new Error(`GitHub ${res.status} reading ${path}: ${await res.text()}`);
     const j = await res.json();
     if (Array.isArray(j)) throw new Error(`${path} is a directory, not a file`);
+
+    // Above 1 MB the contents API stops inlining the body: it answers with
+    // encoding "none" and an empty `content`, which decoded silently to "" and made
+    // a large file look like an absent one. The raw media type serves the same blob
+    // up to 100 MB, and works on private repos with the same token.
+    if (j.encoding !== 'base64' || !j.content) {
+      const raw = await fetch(url, { headers: this._headers({ Accept: 'application/vnd.github.raw' }) });
+      if (!raw.ok) throw new Error(`GitHub ${raw.status} reading ${path} (${j.size} bytes): ${await raw.text()}`);
+      return { text: await raw.text(), sha: j.sha };
+    }
+
     // The API wraps base64 at 60 chars; strip whitespace before decoding.
     return { text: b64ToUtf8(j.content.replace(/\s/g, '')), sha: j.sha };
   }
