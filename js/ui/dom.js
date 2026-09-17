@@ -24,11 +24,23 @@ export function el(tag, props = {}, ...children) {
     else if (typeof v === 'boolean') node[k] = v;
     else node.setAttribute(k, v);
   }
-  for (const c of children.flat(Infinity)) {
-    if (c == null || c === false) continue;
-    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
+  add(node, ...children);
   return node;
+}
+
+/**
+ * Append children, skipping null/undefined/false.
+ *
+ * This exists because the native Node.append() STRINGIFIES anything that is not a
+ * Node, so a `cond ? node : null` child silently renders the text "null". Every
+ * append in this app goes through here for that reason.
+ */
+export function add(parent, ...children) {
+  for (const c of children.flat(Infinity)) {
+    if (c == null || c === false || c === '') continue;
+    parent.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return parent;
 }
 
 export const clear = (node) => { while (node.firstChild) node.firstChild.remove(); return node; };
@@ -59,7 +71,7 @@ export function dialog({ title, body, buttons = [], onClose = null, dismissable 
     }));
   }
 
-  dlg.append(
+  add(dlg,
     el('div', { class: 'dlg-head' }, el('h2', { text: title })),
     el('div', { class: 'dlg-body' }, body),
     buttons.length ? foot : null,

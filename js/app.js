@@ -10,7 +10,7 @@ import { GitHubRepo, AuthError, ConflictError } from './github.js';
 import { Store, unionEvents, foldEvents } from './store.js';
 import { RepoState, inspect } from './bootstrap.js';
 import { loadTokens, hasStoredTokens } from './vault.js';
-import { el, clear, $, dialog, confirm, toast, notice, spinner, plural } from './ui/dom.js';
+import { el, add, clear, dialog, confirm, toast, notice, spinner, plural } from './ui/dom.js';
 import { BoardView, newTaskDialog } from './ui/board.js';
 import { BraindumpView } from './ui/braindump.js';
 import { SummaryView } from './ui/summary.js';
@@ -255,7 +255,7 @@ class App {
       on: { input: (e) => { this.search = e.target.value; this.renderMain(); } },
     });
 
-    this.header.append(
+    add(this.header,
       el('div', { class: 'brand' }, el('span', { class: `dot ${this.tokens.github ? '' : 'offline'}`, title: this.tokens.github ? 'Token loaded — you can publish' : 'Read-only: no GitHub token' }), 'Work Log'),
       el('span', { class: 'repo-chip', title: slug }, priv ? el('span', { class: 'lock', text: '🔒 ' }) : null, slug),
       el('span', { class: 'spacer' }),
