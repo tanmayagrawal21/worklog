@@ -1,25 +1,35 @@
 # Work Log
 
 A JIRA-style board for your own work, backed by an append-only event log in a git repo you own.
-No build step, no dependencies, no server, no database — plain ES modules served straight off
-GitHub Pages.
+No build step, no server, no database — plain ES modules served straight off GitHub Pages. Nothing
+is installed and nothing is bundled; the one exception is the in-browser WebGPU tier, which pulls
+the WebLLM runtime from a CDN the first time you use it.
 
-**Live app:** https://tanmayagrawal21.github.io/worklog/
+**[Try the demo](https://tanmayagrawal21.github.io/worklog/?demo=1)** — sample data, no token, nothing
+saved. **[Live app](https://tanmayagrawal21.github.io/worklog/)** when you want your own.
 
 The point is the changelog. Every change you make is an event committed to *your* repo, so
 `git log -p` on it reads as a legible history of what you actually did — and an optional AI pass
 turns that history into a two-line executive summary each morning and evening.
 
-```
-┌─ Board ─────────────┐ ┌─ Brain dump ───────┐ ┌─ Summary ─────────┐
-│ Backlog  Todo  Doing│ │ "shipped the retry  │ │ Shipped retry      │
-│ Blocked  Review Done│ │  logic, blocked on   │ │ logic; auth review │
-│ [drag cards around] │ │  the auth review"    │ │ is the blocker.    │
-└─────────────────────┘ └──────────┬──────────┘ └───────────────────┘
-                                   └─► reviewable proposals ─► board
-```
+![The board: six columns of tasks with tags, priorities and note counts](docs/board.png)
+
+The views are panes, not tabs: on a wide screen you open the board, the summary and the wiki beside
+each other, which is what the daily loop actually wants. A layout is shareable — `?panes=board,summary,wiki`
+is the link that produced this.
+
+![Board, summary and wiki open side by side](docs/panes.png)
+
+Down to about 400px it stays usable: the header wraps, panes collapse to one, and the columns scroll
+sideways.
+
+<img src="docs/narrow.png" alt="The same board at phone width" width="330">
 
 ## The daily loop
+
+Not ready to make a token? `?demo=1` loads a week of invented work into an in-memory board. Drag
+cards, open the wiki, read the summary; nothing is saved and nothing is sent anywhere.
+
 
 1. Open the app. Read the morning summary of where things stand.
 2. Either **drag cards** on the board, or **brain-dump a paragraph** and let the AI propose
@@ -135,6 +145,7 @@ with macOS, so there are no dev dependencies either. Any ES-module runtime works
 | [js/bootstrap.js](js/bootstrap.js) | inspecting a repo and scaffolding a new one |
 | [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, DOM helpers |
 | [js/webllm.js](js/webllm.js) | the in-browser WebGPU path |
+| [js/demo.js](js/demo.js) | the sample board behind `?demo=1`, read through the real Store |
 | [test/](test/) | headless suites and the JSC shim |
 | [scripts/](scripts/) | the test runner, and the CLI path for seeding a data repo |
 
