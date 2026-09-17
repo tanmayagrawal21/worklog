@@ -84,6 +84,23 @@ Use the hosted app and point it at your own repo — see [SETUP.md](SETUP.md). I
 data repo yet, the first-run wizard offers to create one and asks whether it should be public or
 private.
 
+## Deploy your own copy
+
+Nothing here is tied to my account: the app reads its own URL at runtime and every asset path is
+relative, so a copy works unchanged wherever it is served from.
+
+1. **Use this template** (or fork it) into a repo of your own.
+2. Settings → Pages → Source: *Deploy from a branch*, `main`, `/ (root)`.
+3. Wait for the first build; your copy is at `https://<you>.github.io/<repo>/`.
+
+That's it — no configuration step, no secrets, no Actions. Your copy writes *its own* URL into the
+data repos it sets up, and `scripts/setup.sh` picks the URL up from the git remote for the same
+reason. Worth doing if you'd rather your team not depend on a Pages site under someone else's
+account, and it's the only option if you want to pin a version.
+
+The app repo has to be public for Pages to serve it on a Free plan. That costs nothing in privacy:
+it contains no data and no tokens, and your log lives in a separate repo that can be private.
+
 ## Running it locally
 
 There is nothing to install and nothing to build.

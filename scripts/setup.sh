@@ -22,7 +22,7 @@ VISIBILITY="private"
 EXAMPLES=1
 DRY_RUN=0
 ASSUME_YES=0
-APP_URL="https://tanmayagrawal21.github.io/worklog/"
+APP_URL=""   # resolved below from the git remote, so a fork advertises its own Pages URL
 
 die() { echo "setup.sh: $*" >&2; exit 1; }
 
@@ -56,6 +56,17 @@ gh auth status >/dev/null 2>&1 || die "gh is not logged in. Run: gh auth login"
 if [ -z "$SLUG" ]; then
   owner="$(gh api user --jq .login)" || die "could not read your GitHub login."
   SLUG="$owner/worklog-data"
+fi
+
+# Derive the app URL from whichever copy of the app this script came from, so a fork
+# writes its own Pages URL into the data repo's README instead of upstream's.
+if [ -z "$APP_URL" ]; then
+  remote="$(git config --get remote.origin.url 2>/dev/null || true)"
+  app_slug="$(printf '%s' "$remote" | sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git$##')"
+  case "$app_slug" in
+    */*) APP_URL="https://${app_slug%%/*}.github.io/${app_slug##*/}/" ;;
+    *)   APP_URL="https://github.com" ;;
+  esac
 fi
 case "$SLUG" in */*) ;; *) die "--repo wants owner/name, got '$SLUG'" ;; esac
 

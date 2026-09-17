@@ -103,6 +103,14 @@ before creating anything. If the repo already holds a log it stops rather than g
 open the app and point it at the repo instead. It never touches tokens — you still paste one into
 the app.
 
+## Hosting your own copy of the app
+
+The hosted link is convenient but it is someone else's Pages site. To own the whole thing: use the
+[app repo](https://github.com/tanmayagrawal21/worklog) as a template, enable Pages on your copy
+(Settings → Pages → `main`, `/ (root)`), and use your own URL instead. No configuration — the app
+reads its own location at runtime. Your data repo is unaffected either way; the two are separate,
+and you can point any copy of the app at the same data repo.
+
 ## Using it from more than one machine
 
 Point both at the same data repo and paste a token into each. Edits stage locally and merge by event
