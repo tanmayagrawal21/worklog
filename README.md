@@ -38,6 +38,12 @@ built-in interpreter standing in for the model, so the brain dump and the summar
 3. At end of day, brain-dump again and take the evening summary.
 4. Hit **Publish**. You see the exact commit message and file list *before* anything is pushed.
 
+Staging is local, which is the point — but it does mean unpublished work lives in one browser and
+nowhere else. So the header carries a count of what is unpublished that you can *click* to read the
+list, closing the tab with staged changes asks first, and an end-of-day reminder (17:30 local by
+default, one click to turn off, in Settings to change) speaks up if something is unpushed or the
+evening summary is missing.
+
 Alongside the board there's a **wiki** view: one page per task with its whole history, pages per
 tag, and a dated journal page per day. Task ids written in notes (`blocked by T-4f9a2c`, or
 `[[T-4f9a2c]]`) become real links, so notes accumulate into a connected record.
@@ -175,7 +181,8 @@ Repos written by the earlier flat layout still load, and the app offers a one-co
 ./scripts/test.sh
 ```
 
-172 assertions across store, ai, time, providers, rules, consent, dom, demo and github, plus 26 more that
+190 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo and github,
+plus 26 more that
 exercise the CLI — run under JavaScriptCore, which ships with macOS, so there are no dev
 dependencies either. Every suite is then re-run under `Pacific/Kiritimati` (UTC+14), `Pacific/Niue`
 (UTC-11) and `UTC`, because a local-date bug only shows up on one side of the line. Any ES-module
@@ -189,7 +196,8 @@ runtime works: `JSC=$(which node) ./scripts/test.sh` needs `--experimental-vm-mo
 | [js/github.js](js/github.js) | contents + Git Data API, atomic multi-file commits, conflict detection |
 | [js/ai.js](js/ai.js) | request negotiation, `proposeOperations`, `sanitiseOperations`, `summarise` |
 | [js/providers.js](js/providers.js) | the provider catalogue behind the four tiers |
-| [js/vault.js](js/vault.js) | token storage and the optional passphrase lock |
+| [js/vault.js](js/vault.js) | token storage and the passphrase lock |
+| [js/reminder.js](js/reminder.js) | when the end-of-day nudge is due, as a pure function |
 | [js/bootstrap.js](js/bootstrap.js) | inspecting a repo and scaffolding a new one |
 | [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, the cloud-disclosure gate, DOM helpers |
 | [js/webllm.js](js/webllm.js) | the in-browser WebGPU path |

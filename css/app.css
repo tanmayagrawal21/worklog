@@ -234,7 +234,28 @@ main { padding: 16px; padding-bottom: calc(24px + env(safe-area-inset-bottom, 0p
   padding: 2px 9px;
   font-size: 12px;
   font-weight: 600;
+  /* It is a button now, so it has to look like one you can press. */
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
 }
+.pending-badge:hover { background: var(--warn); color: var(--surface); }
+
+ul.pending-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+ul.pending-list li {
+  display: flex;
+  gap: 9px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+ul.pending-list .when { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: none; padding-top: 1px; }
 
 /* ---------- board -------------------------------------------------------- */
 

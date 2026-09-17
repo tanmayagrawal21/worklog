@@ -683,6 +683,24 @@ export class Store {
   get hasPending() { return this.pending.length > 0; }
 
   /**
+   * What is staged, in words, for a UI that wants to show it without committing to it.
+   *
+   * previewCommit() also produces these, but it builds every file first and throws
+   * when a touched month has not been read from the repo — right for the publish
+   * gate, wrong for a badge someone clicked to see what they had done. This asks
+   * only what folding the pending events says, so it always answers.
+   */
+  get pendingDescriptions() {
+    const { tasks } = this.state;
+    return this.pending.map((e) => ({
+      type: e.type,
+      ts: e.ts,
+      taskId: e.taskId || null,
+      text: describeEvent(e, tasks),
+    }));
+  }
+
+  /**
    * Months our staged events belong to — the only month files a push may rewrite.
    *
    * Closed over boundary events, and that closure is load-bearing. Events are filed by

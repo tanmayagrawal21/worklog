@@ -140,6 +140,35 @@ check('previewCommit is null with nothing staged', () => {
   eq(new Store(fakeRepo).previewCommit(), null);
 });
 
+check('pendingDescriptions says what is staged, in words', () => {
+  localStorage.clear();
+  const s = new Store(fakeRepo);
+  s.remoteEvents = laptop.slice();
+  s.stage(
+    makeEvent('task.status', { taskId: T1, from: 'todo', to: 'done' }),
+    makeEvent('task.note', { taskId: T1, text: 'shipped it' }),
+  );
+  const d = s.pendingDescriptions;
+  eq(d.length, 2);
+  ok(/→ Done$/.test(d[0].text), `should read as a move: ${d[0].text}`);
+  ok(d[0].text.includes(T1), 'and name the task');
+  ok(/note — shipped it$/.test(d[1].text), d[1].text);
+  ok(d.every((r) => r.ts && r.type), 'each row carries its instant and type for the UI');
+});
+
+check('pendingDescriptions answers even when a month is unread', () => {
+  // The whole reason it does not go through previewCommit(): that refuses, correctly,
+  // and someone asking "what have I got staged?" deserves an answer regardless.
+  localStorage.clear();
+  const s = new Store(fakeRepo);
+  s.loadedMonths = ['2024-01'];
+  s.stage(makeEvent('task.note', { taskId: T1, text: 'x' }));
+  let threw = null;
+  try { s.previewCommit(); } catch (e) { threw = e; }
+  ok(threw, 'previewCommit still refuses');
+  eq(s.pendingDescriptions.length, 1, 'but the list is still available');
+});
+
 check('pending changes survive a reload', () => {
   localStorage.clear();
   const a = new Store(fakeRepo);

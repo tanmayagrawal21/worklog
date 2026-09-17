@@ -13,10 +13,11 @@
  * pushed from the UI" should not mean "changes leave without being seen".
  */
 import { GitHubRepo, AuthError, ConflictError } from './github.js';
-import { Store, unionEvents, foldEvents } from './store.js';
+import { Store, unionEvents, foldEvents, todayISO } from './store.js';
+import { reminderDue } from './reminder.js';
 import { RepoState, inspect } from './bootstrap.js';
 import { loadTokens, hasStoredTokens } from './vault.js';
-import { el, add, clear, dialog, confirm, toast, notice, spinner, plural } from './ui/dom.js';
+import { el, add, clear, dialog, confirm, toast, notice, spinner, plural, shortTime } from './ui/dom.js';
 import { BoardView, newTaskDialog } from './ui/board.js';
 import { BraindumpView } from './ui/braindump.js';
 import { SummaryView } from './ui/summary.js';
@@ -41,6 +42,10 @@ const DEFAULTS = {
   sendNotes: true,
   theme: 'auto',
   panes: ['board'],
+  // On by default, because the failure it prevents -- a day's work staged in a browser
+  // and never pushed -- is silent, and one click in the dialog turns it off forever.
+  reminderAt: '17:30',
+  reminderLastFired: '',
 };
 
 const VIEWS = Object.freeze([
@@ -193,6 +198,7 @@ class App {
   async start() {
     this.applyTheme();
     this.mount();
+    this.startReminder();
 
     // ?demo=1 is the front door for someone who has not decided yet: a board to look
     // at with no token, no repo and nothing saved. Checked before anything that could
@@ -298,6 +304,42 @@ class App {
     this.refresh();
   }
 
+  /**
+   * What is staged, and the two things you might want to do about it.
+   *
+   * Deliberately not previewCommit(): that builds every file and refuses when a
+   * touched month has not been read from the repo, which is right before a push and
+   * wrong for someone who just wants to know what they have. This reads the staged
+   * events directly, so the answer is always available.
+   */
+  async pendingDialog() {
+    if (!this.store?.hasPending) return;
+    const rows = this.store.pendingDescriptions;
+
+    const body = el('div', {},
+      el('p', {}, el('strong', { text: plural(rows.length, 'change') }),
+        ' staged in this browser. They are saved here across reloads, but they are ',
+        el('strong', { text: 'not in your repo' }), ' until you publish.'),
+      el('ul', { class: 'pending-list' }, rows.map((r) => el('li', {},
+        el('span', { class: 'when', text: shortTime(r.ts) }), r.text))),
+      notice('info', 'Publishing shows you the exact commit first — this list is not the last word.'),
+    );
+
+    const { done } = dialog({
+      title: 'Not published yet',
+      body,
+      buttons: [
+        { label: 'Discard all', class: 'danger', value: 'discard' },
+        { label: 'Close', value: false },
+        { label: 'Publish…', class: 'primary', value: 'publish' },
+      ],
+    });
+
+    const choice = await done;
+    if (choice === 'publish') await this.publish();
+    else if (choice === 'discard') await this.discard();
+  }
+
   /* ---------- the publish gate ------------------------------------------ */
 
   /**
@@ -392,6 +434,67 @@ class App {
     this.applyTheme();
   }
 
+  /**
+   * Check once a minute rather than sleeping until the target time: a laptop that was
+   * asleep at 17:30 wakes with a stale timer, and polling a cheap pure function is
+   * simpler than reasoning about that. reminderDue() decides; this only asks.
+   */
+  startReminder() {
+    if (this._reminderTimer) return;
+    this._reminderTimer = setInterval(() => this.checkReminder(), 60000);
+    // And once now, for the tab opened at 20:00 after a 17:30 that nobody saw.
+    setTimeout(() => this.checkReminder(), 4000);
+  }
+
+  async checkReminder() {
+    // Never in the demo: there is nothing to lose and nothing to publish.
+    if (this.demo || !this.store || this._reminderOpen) return;
+
+    const { due, reason, today } = reminderDue({
+      at: this.settings.reminderAt,
+      lastFired: this.settings.reminderLastFired,
+      hasPending: this.hasPending,
+      hasEveningSummary: !!this.state?.summaries?.[todayISO()]?.evening,
+    });
+    if (!due) return;
+
+    // Recorded before the dialog rather than after, so dismissing it by any route --
+    // Escape, a closed tab -- still counts as today's one reminder.
+    this.saveSettings({ reminderLastFired: today });
+    this._reminderOpen = true;
+
+    const lines = {
+      pending: `${plural(this.store.pending.length, 'change')} staged in this browser and not yet in your repo.`,
+      summary: 'No evening summary for today yet.',
+      both: `${plural(this.store.pending.length, 'change')} not yet in your repo, and no evening summary for today.`,
+    };
+
+    const { done } = dialog({
+      title: 'End of the day',
+      body: el('div', {},
+        el('p', { text: lines[reason] }),
+        el('p', { class: 'sub', text: 'Staged changes survive a reload, but they only exist in this browser — a cleared profile or another machine will not have them.' })),
+      buttons: [
+        { label: 'Turn this off', value: 'off' },
+        { label: 'Not now', value: false },
+        this.hasPending
+          ? { label: 'Publish…', class: 'primary', value: 'publish' }
+          : { label: 'Write it', class: 'primary', value: 'summary' },
+      ],
+    });
+
+    const choice = await done;
+    this._reminderOpen = false;
+    if (choice === 'off') {
+      this.saveSettings({ reminderAt: '' });
+      toast('Reminder off. Settings has it if you want it back.');
+    } else if (choice === 'publish') {
+      await this.publish();
+    } else if (choice === 'summary') {
+      this.go('summary');
+    }
+  }
+
   applyTheme() {
     const t = this.settings.theme || 'auto';
     if (t === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -441,8 +544,14 @@ class App {
       this.aiChip(),
       el('span', { class: 'spacer' }),
       this.isOpen('board') ? search : null,
-      this.hasPending ? el('span', { class: 'pending-badge', text: `${this.store.pending.length} unpublished` }) : null,
-      this.hasPending ? el('button', { class: 'ghost', text: 'Discard', on: { click: () => this.discard() } }) : null,
+      // A count of unpublished changes that cannot be opened is a source of unease
+      // rather than information: the question it prompts is "which ones?".
+      this.hasPending ? el('button', {
+        class: 'pending-badge',
+        text: `${this.store.pending.length} unpublished`,
+        title: 'See what has not been published yet',
+        on: { click: () => this.pendingDialog() },
+      }) : null,
       this.demo
         ? el('button', { class: 'primary', text: 'Set up mine', title: 'Point this at a repo of your own', on: { click: () => this.leaveDemo() } })
         : el('button', { class: 'primary', text: 'Publish', disabled: !this.hasPending, on: { click: () => this.publish() } }),

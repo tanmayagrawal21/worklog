@@ -10,7 +10,7 @@
 import { todayISO } from '../store.js';
 import { summarise, summaryEvent, AIError } from '../ai.js';
 import { endpointProblem } from '../providers.js';
-import { el, clear, notice, spinner, toast, shortTime } from './dom.js';
+import { el, clear, notice, spinner, toast, shortTime, confirm } from './dom.js';
 import { confirmCloudSend } from './consent.js';
 
 export class SummaryView {
@@ -71,9 +71,47 @@ export class SummaryView {
     return el('button', {
       class: existing ? '' : 'primary',
       text: existing ? `Regenerate ${kind}` : label,
+      title: existing ? `Already written ${shortTime(existing.ts)}. Regenerating replaces it.` : '',
       disabled: !!this.busy,
       on: { click: () => this.generate(kind) },
     });
+  }
+
+  /**
+   * Regenerating is not free — it is a request, and for the morning summary it is a
+   * request that overwrites the reading you already read. So an existing summary asks
+   * first, and says the two things that decide the answer: when it was written, and
+   * whether anything has happened since.
+   */
+  async confirmReplace(kind, existing) {
+    const fresh = !this.isStale(existing);
+    const body = el('div', {},
+      el('p', {}, `There is already a ${kind} summary for today, written `,
+        el('strong', { text: shortTime(existing.ts) }),
+        existing.model ? ` by ${existing.model}` : '', '. Regenerating replaces it.'),
+      kind === 'morning'
+        ? el('p', { class: 'sub', text: 'The morning summary reads the seven days before today, not today — so today\'s work will not change it. It is meant to be written once, at the start of the day.' })
+        : null,
+      fresh
+        ? notice('info', 'Nothing on the board has changed since it was written, so the new one will likely say the same thing.')
+        : notice('info', 'The board has changed since it was written, so this should pick up something new.'),
+    );
+    return confirm({ title: `Replace the ${kind} summary?`, body, confirmLabel: 'Regenerate' });
+  }
+
+  /**
+   * Context for the next summary: for an evening, this morning's reading. For a
+   * morning there is no earlier summary today by definition, so reach back to the last
+   * one written — passing today's non-existent evening meant the morning summary was
+   * generated with no continuity at all.
+   */
+  previousSummary(kind, today) {
+    const forToday = this.app.state.summaries[today] || {};
+    if (kind === 'evening') return forToday.morning || null;
+    const [, kinds] = Object.entries(this.app.state.summaries)
+      .filter(([d]) => d < today)
+      .sort((a, b) => b[0].localeCompare(a[0]))[0] || [];
+    return kinds ? (kinds.evening || kinds.morning || null) : null;
   }
 
   /**
@@ -109,6 +147,10 @@ export class SummaryView {
     const problem = endpointProblem(endpoint);
     if (problem) { this.error = problem; this.app.refresh(); return; }
 
+    const today = todayISO();
+    const existing = this.app.state.summaries[today]?.[kind];
+    if (existing && !await this.confirmReplace(kind, existing)) return;
+
     // No free text here, so this only discloses the board payload -- but it is still
     // the first thing that leaves, and the count of what leaves is worth seeing once.
     if (!await confirmCloudSend({
@@ -122,14 +164,13 @@ export class SummaryView {
     this.progressEl.textContent = '';
     this.app.refresh();
 
-    const today = todayISO();
     try {
       const summary = await summarise({
         endpoint,
         tasks: this.app.tasks,
         events: this.app.state.events,
         kind,
-        previous: this.app.state.summaries[today]?.[kind === 'evening' ? 'morning' : 'evening'] || null,
+        previous: this.previousSummary(kind, today),
         includeNotes: this.app.settings.sendNotes,
         onProgress: ({ text, progress }) => {
           this.progressEl.textContent = `${text}${progress ? ` (${Math.round(progress * 100)}%)` : ''}`;

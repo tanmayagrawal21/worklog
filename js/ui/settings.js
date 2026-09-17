@@ -184,6 +184,7 @@ export function settingsDialog(app) {
 
   /* --- privacy & appearance --- */
   const sendNotes = el('input', { type: 'checkbox', checked: cfg.sendNotes !== false });
+  const reminderAt = el('input', { type: 'time', value: cfg.reminderAt || '' });
   const theme = el('select', {}, [['auto', 'Match system'], ['light', 'Light'], ['dark', 'Dark']]
     .map(([v, label]) => el('option', { value: v, selected: (cfg.theme || 'auto') === v, text: label })));
   const advanced = el('input', { type: 'checkbox', checked: !!cfg.advancedEndpoint });
@@ -255,6 +256,11 @@ export function settingsDialog(app) {
       el('label', { class: 'check' }, advanced,
         el('span', {}, 'Let me override the endpoint URL',
           el('div', { class: 'hint', text: 'For a proxy, a self-hosted gateway, or a region-specific host.' })))),
+
+    el('h3', { style: 'margin-top:18px', text: 'Publishing' }),
+    el('div', { class: 'field' },
+      el('label', { text: 'End-of-day reminder' }), reminderAt,
+      el('div', { class: 'hint', text: 'Local time. Once a day, and only if something is unpublished or the evening summary is missing. Clear the field to turn it off.' })),
 
     el('h3', { style: 'margin-top:18px', text: 'Appearance' }),
     el('div', { class: 'field' }, el('label', { text: 'Theme' }), theme),
@@ -329,6 +335,10 @@ export function settingsDialog(app) {
             modelByProvider: { ...(cfg.modelByProvider || {}), [pid]: model.value.trim() },
             advancedEndpoint: advanced.checked,
             sendNotes: sendNotes.checked,
+            reminderAt: reminderAt.value || '',
+            // A changed time is a fresh intention: it should be allowed to fire today
+            // rather than be swallowed by this morning's already-fired flag.
+            ...(reminderAt.value !== (cfg.reminderAt || '') ? { reminderLastFired: '' } : {}),
             theme: theme.value,
           });
           return repoChanged ? 'repo-changed' : 'saved';
