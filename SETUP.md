@@ -111,7 +111,7 @@ repo, so you can switch whenever:
 | | How | When it fits |
 | --- | --- | --- |
 | Hosted | open the link | you just want to use it |
-| npm | `npx work-log` | you have Node and want a pinned version, or a local AI server |
+| npm | `npx work-log` (not published yet) | you have Node and want a pinned version, or a local AI server |
 | Clone | `git clone …` then `python3 -m http.server 8000` | you want to change the app |
 
 `npx work-log` serves the package's own files on `http://127.0.0.1:8765` and opens a browser.

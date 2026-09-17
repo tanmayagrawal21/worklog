@@ -115,12 +115,15 @@ python3 -m http.server 8000
 It must be served over HTTP rather than opened as a `file://` URL, because it loads ES modules.
 Any static server does — `caddy file-server`, `npx serve`, whatever you have.
 
-If you have Node and would rather not clone anything, the same app is on npm:
+If you have Node and would rather not clone anything, the app also runs as one npm command:
 
 ```sh
 npx work-log          # serves it and opens a browser
 npx work-log --demo   # the sample board, no token, nothing saved
 ```
+
+*Not on npm yet — the package is here and works, but the first `npm publish` has not happened. From
+a checkout, `node bin/worklog.mjs` is the same thing. Delete this note once it is published.*
 
 That is a static file server over the package's own directory and nothing else — no build, no
 dependencies, no telemetry, nothing written outside your data repo. `npx work-log --help` lists the
