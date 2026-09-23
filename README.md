@@ -1,16 +1,30 @@
 # Work Log
 
-A JIRA-style board for your own work, backed by an append-only event log in a git repo you own.
-No build step, no server, no database — plain ES modules served straight off GitHub Pages. Nothing
-is installed and nothing is bundled; the one exception is the in-browser WebGPU tier, which pulls
-the WebLLM runtime from a CDN the first time you use it.
+A JIRA-style Kanban board for your own work that writes a **stateful, human-readable ledger of it
+behind the scenes** — as markdown *and* JSON, in a git repo that is entirely yours, private or
+public as you choose.
 
 **[Try the demo](https://tanmayagrawal21.github.io/worklog/?demo=1)** — sample data, no token, nothing
 saved. **[Live app](https://tanmayagrawal21.github.io/worklog/)** when you want your own.
 
-The point is the changelog. Every change you make is an event committed to *your* repo, so
-`git log -p` on it reads as a legible history of what you actually did — and an optional AI pass
-turns that history into a two-line executive summary each morning and evening.
+You use it the way you'd use any tracker: drag cards between columns, add notes, change status,
+close things out. What you get *for free* is the artifact that normally doesn't exist — a legible
+record of what you actually did, accumulating in your own repo, which you publish when you feel like
+it rather than on every keystroke. Nothing reaches GitHub until you approve the commit, and you see
+its message and file list first.
+
+Optionally, connect any model — running locally on your machine, Hugging Face inference,
+OpenAI, Anthropic, Google, or any OpenAI-compatible endpoint — and you get two more things:
+
+- **Brain dump.** Type everything you've been doing, however it comes out. It proposes board
+  updates — new items, notes, status changes — and **every proposal has a checkbox**. Nothing is
+  applied until you tick it, so the AI drafts and you decide.
+- **Executive summaries.** A morning read of where things stand, an evening read of what moved,
+  written into the log next to the work they describe.
+
+No build step, no server, no database, no dependencies — plain ES modules served straight off GitHub
+Pages. The one exception is the in-browser WebGPU tier, which fetches the WebLLM runtime from a CDN
+the first time you use it.
 
 ![The board: six columns of tasks with tags, priorities and note counts](docs/board.png)
 
