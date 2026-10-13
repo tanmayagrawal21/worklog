@@ -135,9 +135,9 @@ export class StandupView {
         : null,
 
       this.optionsStale
-        ? notice('info', 'You have edited this, so the change has not been applied. Rebuild from log to take it, and lose your edits.')
+        ? notice('info', 'You have edited this, so the change has not been applied. Reset to take it, and lose your edits.')
         : this.touched && this.stale
-          ? notice('info', 'Your log has changed since this draft was built. Rebuild from log to pick that up.')
+          ? notice('info', 'Your log has changed since this draft was built. Reset to pick that up, or leave it — what you copy is what is in the box.')
           : null,
 
       el('div', { class: 'field', style: 'margin-top:12px' }, box,
@@ -161,11 +161,18 @@ export class StandupView {
             disabled: !!this.report?.empty,
             on: { click: () => this.writeUp() },
           }),
-          el('button', {
-            text: 'Rebuild from log',
-            title: this.touched ? 'Discards your edits and rebuilds from the log' : 'Rebuild from the log',
-            on: { click: () => { this.rebuild(); this.app.refresh(); toast('Rebuilt from your log.'); } },
-          }),
+          // Only once there is something to revert. The draft rebuilds itself on
+          // render, so a permanent "rebuild" button would sit next to "Write it up"
+          // looking like a second way to generate the text rather than the undo it is.
+          this.touched || this.written
+            ? el('button', {
+              text: 'Reset',
+              title: this.written
+                ? 'Go back to the plain draft from your log, discarding the write-up'
+                : 'Discard your edits and go back to the draft from your log',
+              on: { click: () => { this.rebuild(); this.app.refresh(); toast('Back to the draft from your log.'); } },
+            })
+            : null,
           el('span', { class: 'spacer' }),
           posted ? el('span', { class: 'hint', text: `Recorded ${shortTime(posted.ts)}` }) : null)));
 

@@ -115,7 +115,30 @@ check('changing the layout does NOT silently discard what you wrote', () => {
 
   eq(v.draft, 'something I wrote myself', 'my text survives');
   ok(v.optionsStale, 'and the pane says the layout change is waiting');
-  ok(v.render().findByText('Rebuild from log'), 'with the way to apply it on screen');
+  ok(v.render().findByText('Reset'), 'with the way to apply it on screen');
+});
+
+check('no Reset button until there is something to revert', () => {
+  // Two buttons that both look like a way to generate the text is the confusion this
+  // guards: the draft rebuilds itself, so Reset is an undo and only belongs on screen
+  // once you have edited the box or asked the model to rewrite it.
+  const v = view(workedDay());
+  ok(!v.render().findByText('Reset'), 'a fresh draft has nothing to revert to');
+
+  const box = v.render().find('textarea');
+  box.value = 'mine';
+  box.dispatch('input');
+  ok(v.render().findByText('Reset'), 'editing gives you a way back');
+});
+
+check('Reset goes back to the draft the log produces', () => {
+  const v = view(workedDay());
+  const box = v.render().find('textarea');
+  box.value = 'mine';
+  box.dispatch('input');
+  v.render().findByText('Reset').dispatch('click');
+  ok(v.draft.includes('swapped the driver'), v.draft);
+  ok(!v.touched, 'and the box counts as untouched again');
 });
 
 check('an empty day still renders, and says so', () => {

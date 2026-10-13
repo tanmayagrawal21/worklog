@@ -247,7 +247,7 @@ copy of the app still opens in an older one.
 ./scripts/test.sh
 ```
 
-245 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo, github and
+247 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo, github and
 the two standup suites — one of which renders the pane against a
 [fake DOM](test/fake-dom.js), because a view that throws on render is invisible to a test that
 never runs the renderer. Plus 26 more that
