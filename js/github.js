@@ -38,6 +38,58 @@ function b64ToUtf8(b64) {
 
 const API = 'https://api.github.com';
 
+/** The name scripts/setup.sh picks when none is given; the app suggests the same one. */
+export const DEFAULT_REPO = 'worklog-data';
+
+/* GitHub's own naming rules. Usernames and orgs are alphanumerics joined by single
+   dashes, up to 39 characters; repo names also allow dots and underscores. */
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Read the repo fields as the user meant them.
+ *
+ * The name field is prefilled with DEFAULT_REPO so that accepting the suggestion takes
+ * no typing — it used to be a placeholder, which looked prefilled, so leaving it alone
+ * saved an empty name. The flip side of a real prefill is that someone who opened
+ * Settings only to pick an AI provider would now be asked to name an owner, so an
+ * untouched suggestion with no owner and nothing configured before still means
+ * "no repo yet", exactly as the empty form did.
+ *
+ * @param {string} saved the repo name already in settings, if any.
+ */
+export function resolveRepoTarget({ owner = '', repo = '', saved = '' } = {}) {
+  const o = String(owner).trim();
+  const r = String(repo).trim();
+  const untouchedSuggestion = !o && !String(saved).trim() && r === DEFAULT_REPO;
+  return { owner: o, repo: untouchedSuggestion ? '' : r };
+}
+
+/**
+ * Check a typed owner/name pair before anything is requested, so a blank or
+ * mistyped field is a sentence next to the field rather than a 404 later — or, worse,
+ * a half-saved config that drops the user on "No data repo yet" with no reason given.
+ *
+ * Both blank is not a problem: that is simply "no repo configured yet", which is a
+ * legitimate state (the demo, or someone who only came to Settings to pick a model).
+ *
+ * @returns {{field: 'owner'|'repo', message: string}|null} null when the pair is usable.
+ */
+export function repoTargetProblem({ owner = '', repo = '' } = {}) {
+  const o = String(owner).trim();
+  const r = String(repo).trim();
+  if (!o && !r) return null;
+  if (!o) return { field: 'owner', message: 'Enter the GitHub user or org that owns the repo.' };
+  if (!r) return { field: 'repo', message: `Enter a repo name to store the log in — ${DEFAULT_REPO} is a fine choice.` };
+  if (!OWNER_RE.test(o)) {
+    return { field: 'owner', message: `"${o}" is not a GitHub username or org: letters, digits and single dashes only, and no slashes.` };
+  }
+  if (r === '.' || r === '..' || !REPO_RE.test(r)) {
+    return { field: 'repo', message: `"${r}" is not a GitHub repo name: letters, digits, dots, dashes and underscores only, and no slashes.` };
+  }
+  return null;
+}
+
 /** Thrown when a write races another writer; the store resolves these by merging. */
 export class ConflictError extends Error {
   constructor(path) {
@@ -237,6 +289,17 @@ export class GitHubRepo {
     if (!res.ok) throw new Error(`GitHub ${res.status} creating repo: ${await res.text()}`);
 
     const j = await res.json();
+    // POST /user/repos always creates under the token's own account, so a typed owner
+    // that is someone else (an org, a second account) silently lands the new repo
+    // somewhere this instance will never read from. Better to say where it went than
+    // to let the first commit 404 against an owner/name that does not exist.
+    if (j.full_name && j.full_name.toLowerCase() !== this.slug.toLowerCase()) {
+      throw new Error(
+        `GitHub created ${j.full_name}, not ${this.slug}: a token can only create repos on its own account. `
+        + `Either set Owner to ${j.full_name.split('/')[0]} in Settings, or create ${this.slug} yourself on github.com `
+        + '(empty, no README) and come back — the token then only needs Contents: read and write on it.',
+      );
+    }
     this._visibility = j.private ? 'private' : 'public';
     return { created: true, existed: false, htmlUrl: j.html_url, defaultBranch: j.default_branch };
   }

@@ -5,8 +5,8 @@
  * files big enough that nobody has one yet, which is exactly why they need a test.
  */
 import './shim.js';
-import { checkAsync, eq, ok, report } from './shim.js';
-import { GitHubRepo } from '../js/github.js';
+import { check, checkAsync, eq, ok, report } from './shim.js';
+import { GitHubRepo, DEFAULT_REPO, repoTargetProblem, resolveRepoTarget } from '../js/github.js';
 
 const repo = () => new GitHubRepo({ owner: 'me', repo: 'd', branch: 'main', token: 'ghp_x' });
 
@@ -65,6 +65,96 @@ await checkAsync('a write without a token is refused before any request is made'
     () => r.commitFiles([{ path: 'a', text: 'b' }], 'm').catch((e) => { threw = e; }));
   ok(threw, 'a tokenless write must reject');
   ok(/token/i.test(threw.message), `and say why: ${threw?.message}`);
+});
+
+/* The repo target: a blank field behind a suggested name used to be saved as "no repo",
+   which left the create step with nothing to create and no message about why. */
+console.log('--- repoTargetProblem() ---');
+
+check('an owner with the suggested name is fine', () => {
+  eq(repoTargetProblem({ owner: 'me', repo: DEFAULT_REPO }), null);
+});
+
+check('both blank is not an error — that is just an unconfigured app', () => {
+  eq(repoTargetProblem({ owner: '', repo: '' }), null);
+  eq(repoTargetProblem({}), null);
+});
+
+check('a named repo with no owner names the owner field', () => {
+  const p = repoTargetProblem({ owner: '  ', repo: DEFAULT_REPO });
+  eq(p?.field, 'owner', `expected the owner field: ${JSON.stringify(p)}`);
+});
+
+check('an owner with no repo is reported instead of silently saved', () => {
+  const p = repoTargetProblem({ owner: 'me', repo: '   ' });
+  eq(p?.field, 'repo', `expected the repo field: ${JSON.stringify(p)}`);
+  ok(p.message.includes(DEFAULT_REPO), `and should suggest a name: ${p.message}`);
+});
+
+check('a slug pasted into either field is caught, not turned into me/a/b', () => {
+  eq(repoTargetProblem({ owner: 'me/data', repo: 'x' })?.field, 'owner');
+  eq(repoTargetProblem({ owner: 'me', repo: 'me/data' })?.field, 'repo');
+});
+
+check('names GitHub itself would refuse are caught before the request', () => {
+  eq(repoTargetProblem({ owner: '-me', repo: 'ok' })?.field, 'owner', 'owner cannot start with a dash');
+  eq(repoTargetProblem({ owner: 'me-', repo: 'ok' })?.field, 'owner', 'owner cannot end with a dash');
+  eq(repoTargetProblem({ owner: 'a--b', repo: 'ok' })?.field, 'owner', 'no doubled dashes');
+  eq(repoTargetProblem({ owner: 'm'.repeat(40), repo: 'ok' })?.field, 'owner', '39 characters is the limit');
+  eq(repoTargetProblem({ owner: 'me', repo: '..' })?.field, 'repo', '".." is not a repo name');
+  eq(repoTargetProblem({ owner: 'me', repo: 'my repo' })?.field, 'repo', 'spaces are not allowed');
+});
+
+check('legal-but-unusual names are allowed through', () => {
+  eq(repoTargetProblem({ owner: 'a', repo: '.github' }), null);
+  eq(repoTargetProblem({ owner: 'My-Org-1', repo: 'work_log.data-2026' }), null);
+  eq(repoTargetProblem({ owner: ' me ', repo: ' data ' }), null, 'surrounding space is trimmed, not rejected');
+});
+
+console.log('--- resolveRepoTarget(): the prefilled suggestion ---');
+
+check('accepting the suggestion by typing only an owner configures that repo', () => {
+  eq(resolveRepoTarget({ owner: 'me', repo: DEFAULT_REPO, saved: '' }), { owner: 'me', repo: DEFAULT_REPO });
+});
+
+check('the suggestion alone, with no owner, is still "no repo yet"', () => {
+  // Opening Settings to pick an AI provider must not demand a GitHub owner.
+  eq(resolveRepoTarget({ owner: '', repo: DEFAULT_REPO, saved: '' }), { owner: '', repo: '' });
+});
+
+check('a configured repo that happens to be the suggested name is kept', () => {
+  eq(resolveRepoTarget({ owner: '', repo: DEFAULT_REPO, saved: DEFAULT_REPO }), { owner: '', repo: DEFAULT_REPO },
+    'clearing only the owner is an error to report, not a reason to forget the repo');
+});
+
+check('a name the user actually typed is never dropped', () => {
+  eq(resolveRepoTarget({ owner: '', repo: 'my-log', saved: '' }), { owner: '', repo: 'my-log' });
+});
+
+check('values are trimmed', () => {
+  eq(resolveRepoTarget({ owner: ' me ', repo: ' my-log ' }), { owner: 'me', repo: 'my-log' });
+});
+
+await checkAsync('creating a repo that lands on the wrong account fails loudly', async () => {
+  // POST /user/repos ignores the owner and uses the token's account. A typed org must
+  // not end up as a repo on someone's personal account that this app never reads.
+  const r = new GitHubRepo({ owner: 'some-org', repo: 'd', branch: 'main', token: 'ghp_x' });
+  let threw = null;
+  await withFetch(
+    async () => ({ ok: true, status: 201, async json() { return { full_name: 'me/d', private: true, default_branch: 'main' }; } }),
+    () => r.createRepo({ private: true }).catch((e) => { threw = e; }),
+  );
+  ok(threw, 'a repo created under the wrong owner must reject');
+  ok(/me\/d/.test(threw.message) && /some-org\/d/.test(threw.message), `and name both places: ${threw?.message}`);
+});
+
+await checkAsync('creating it on the token owner account succeeds', async () => {
+  const r = new GitHubRepo({ owner: 'Me', repo: 'd', branch: 'main', token: 'ghp_x' });
+  const out = await withFetch(
+    async () => ({ ok: true, status: 201, async json() { return { full_name: 'me/d', private: true, html_url: 'u', default_branch: 'main' }; } }),
+    () => r.createRepo({ private: true }),
+  );
+  eq(out.created, true, 'a case difference in the owner is the same account');
 });
 
 quit(report('github.js'));

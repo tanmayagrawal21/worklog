@@ -195,7 +195,7 @@ Repos written by the earlier flat layout still load, and the app offers a one-co
 ./scripts/test.sh
 ```
 
-190 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo and github,
+188 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo and github,
 plus 26 more that
 exercise the CLI — run under JavaScriptCore, which ships with macOS, so there are no dev
 dependencies either. Every suite is then re-run under `Pacific/Kiritimati` (UTC+14), `Pacific/Niue`

@@ -14,6 +14,7 @@
  * cost you your Anthropic key.
  */
 import { listModels, suggestedFor } from '../ai.js';
+import { DEFAULT_REPO, repoTargetProblem, resolveRepoTarget } from '../github.js';
 import { MODES, PROVIDERS, DEFAULT_PROVIDER, providersInMode, modeOf, resolveEndpoint } from '../providers.js';
 import { hasWebGPU, preloadBrowserModel, unloadBrowserModel } from '../webllm.js';
 import { saveTokens, clearTokens, passphraseStrength, hasStoredTokens, isLocked } from '../vault.js';
@@ -27,7 +28,11 @@ export function settingsDialog(app) {
 
   /* --- repo --- */
   const owner = el('input', { type: 'text', value: cfg.owner || '', placeholder: 'your-github-username' });
-  const repo = el('input', { type: 'text', value: cfg.repo || '', placeholder: 'worklog-data' });
+  // Prefilled rather than hinted. As a placeholder, the suggested name read as a value
+  // that was already there, so leaving it alone saved an empty repo and the create step
+  // then had nothing to create. A suggestion you can accept by doing nothing has to
+  // actually be in the field.
+  const repo = el('input', { type: 'text', value: cfg.repo || DEFAULT_REPO, placeholder: DEFAULT_REPO });
   const branch = el('input', { type: 'text', value: cfg.branch || 'main' });
   const gh = el('input', { type: 'password', placeholder: app.tokens.github ? MASK : 'ghp_… or github_pat_…', autocomplete: 'off' });
 
@@ -216,7 +221,8 @@ export function settingsDialog(app) {
       el('div', { class: 'field' }, el('label', { text: 'Branch' }), branch)),
     el('p', { class: 'hint' }, el('strong', { text: 'The repo does not need to exist yet.' }),
       ' If it does not, saving these settings offers to create it — asking first whether it should be '
-      + 'private or public, and showing you the files it would commit. Nothing is created without that yes.'),
+      + 'private or public, and showing you the files it would commit. Nothing is created without that yes. '
+      + `The name is filled in with a suggestion (${DEFAULT_REPO}); any repo you own works, so change it if you prefer another.`),
 
     el('h3', { style: 'margin-top:18px', text: 'Credentials' }),
     notice('info', 'Tokens are stored in this browser only. They are never committed to any repo, and each is only ever sent to the service it belongs to.'),
@@ -298,6 +304,18 @@ export function settingsDialog(app) {
           const pid = currentProvider;
           if (PROVIDERS[pid].custom && !baseUrl.value.trim()) { toast('A custom provider needs an endpoint URL.', 'error'); return undefined; }
 
+          const { owner: ownerVal, repo: repoVal } = resolveRepoTarget({
+            owner: owner.value, repo: repo.value, saved: cfg.repo,
+          });
+
+          // Caught here rather than as a 404, or as a silent "No data repo yet".
+          const bad = repoTargetProblem({ owner: ownerVal, repo: repoVal });
+          if (bad) {
+            toast(bad.message, 'error');
+            (bad.field === 'owner' ? owner : repo).focus();
+            return undefined;
+          }
+
           typedKeys[pid] = key.value;
           const ai = { ...app.tokens.ai };
           for (const [id, typed] of Object.entries(typedKeys)) {
@@ -323,10 +341,10 @@ export function settingsDialog(app) {
           app.tokens = tokens;
           app.passphrase = passphrase;
 
-          const repoChanged = owner.value.trim() !== cfg.owner || repo.value.trim() !== cfg.repo || branch.value.trim() !== cfg.branch;
+          const repoChanged = ownerVal !== cfg.owner || repoVal !== cfg.repo || branch.value.trim() !== cfg.branch;
           app.saveSettings({
-            owner: owner.value.trim(),
-            repo: repo.value.trim(),
+            owner: ownerVal,
+            repo: repoVal,
             branch: branch.value.trim() || 'main',
             provider: pid,
             providerByMode: { ...(cfg.providerByMode || {}), [PROVIDERS[pid].mode]: pid },
