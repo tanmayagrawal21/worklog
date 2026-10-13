@@ -247,4 +247,39 @@ await checkAsync('writing it up with the demo interpreter fills the box from the
   eq(v.error, null);
 });
 
+await checkAsync('writing it up AFTER editing keeps your text and re-reads the log', async () => {
+  // The bug: the payload came from the report built at the last rebuild, and typing
+  // suppresses rebuilds -- so this sent a stale day and discarded the edits.
+  const app = workedDay();
+  app.endpoint = { kind: 'rules' };
+  const v = view(app);
+  const box = v.render().find('textarea');
+  box.value = 'Signing off:\n\nsomething I typed myself';
+  box.dispatch('input');
+
+  // A card moves while the edit is sitting in the box.
+  app.tasks = [...app.tasks, task('T-ccc333', 'late arrival', { tags: ['Ops'] })];
+  app.state.events = [...app.state.events, { ts: noonish(16), type: 'task.note', taskId: 'T-ccc333', text: 'picked this up late' }];
+  app.state.lastEventTs = noonish(16);
+
+  await v.writeUp();
+  ok(v.draft.includes('something I typed myself'), `my words must survive: ${v.draft}`);
+  ok(v.report.items.some((i) => i.text === 'picked this up late'), 'and the log was re-read');
+});
+
+await checkAsync('a write-up that no longer matches the state offers an update', async () => {
+  const app = workedDay();
+  app.endpoint = { kind: 'rules' };
+  const v = view(app);
+  v.render();
+  await v.writeUp();
+  ok(!v.outdated, 'fresh after writing up');
+
+  app.state.lastEventTs = noonish(19);
+  ok(v.outdated, 'a card moved, so the write-up is behind');
+  const root = v.render();
+  ok(root.findByText('Update the write-up'), 'the button says what it is for');
+  ok(root.textContent.includes('does not account for your latest changes'), root.textContent);
+});
+
 quit(report('standup view'));

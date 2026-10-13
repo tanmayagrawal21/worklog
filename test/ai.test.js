@@ -289,6 +289,25 @@ check('withholding notes keeps the work and drops the trailing detail', () => {
   eq(out[0].lines[0], 'Fixed the flaky scheduler test');
 });
 
+check('a hand-written draft raises the line budget and its own projects are trusted', () => {
+  // Eight lines about three tasks is a normal hand-written report, and the project
+  // may be one the board has never heard of. Their text is the authority, so neither
+  // the cap nor the project filter may quietly delete it.
+  const draft = Array.from({ length: 8 }, (_, i) => `my line ${i}`).join('\n');
+  const out = clampStandup(
+    { groups: [{ project: 'Something Offline', lines: draft.split('\n') }] },
+    DAY_ITEMS,
+    { draft },
+  );
+  eq(out[0].project, 'Something Offline');
+  eq(out[0].lines.length, 8, 'none of the engineer\'s own lines may be dropped');
+});
+
+await checkAsync('an empty day still writes up when you have typed something yourself', async () => {
+  const out = await writeStandup({ endpoint: { kind: 'rules' }, payload: [], draft: 'just this one line' });
+  eq(out, [{ project: '', lines: ['just this one line'] }]);
+});
+
 await checkAsync('an empty day refuses before any request is made', async () => {
   let threw = null;
   await writeStandup({ endpoint: { kind: 'http', baseUrl: 'http://x/v1', model: 'm' }, payload: [] })

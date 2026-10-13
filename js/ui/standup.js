@@ -79,6 +79,16 @@ export class StandupView {
   get stale() { return this.app.state.lastEventTs !== this.builtAt; }
 
   /**
+   * True when a write-up no longer accounts for everything: either the log moved or
+   * you have typed since. Regenerating on its own is not an option -- every write-up
+   * is a paid request through the disclosure gate -- so this drives an Update button
+   * instead, which is the same action with a label that says why it is there.
+   */
+  get outdated() {
+    return !!this.written && (this.touched || this.app.state.lastEventTs !== this.writtenAt);
+  }
+
+  /**
    * An option changed. Re-render the text when the box is untouched; when it is not,
    * leave your text alone and offer the rebuild instead. Silently discarding a report
    * someone just wrote by hand because they nudged a dropdown would be unforgivable.
@@ -136,9 +146,11 @@ export class StandupView {
 
       this.optionsStale
         ? notice('info', 'You have edited this, so the change has not been applied. Reset to take it, and lose your edits.')
-        : this.touched && this.stale
-          ? notice('info', 'Your log has changed since this draft was built. Reset to pick that up, or leave it — what you copy is what is in the box.')
-          : null,
+        : this.outdated
+          ? notice('info', 'This write-up does not account for your latest changes. Update the write-up to take them in — your edits are kept.')
+          : this.touched && this.stale
+            ? notice('info', 'Your log has changed since this draft was built. Reset to pick that up, or leave it — what you copy is what is in the box.')
+            : null,
 
       el('div', { class: 'field', style: 'margin-top:12px' }, box,
         el('div', { class: 'hint' },
@@ -156,9 +168,12 @@ export class StandupView {
             on: { click: () => this.copy() },
           }),
           el('button', {
-            text: this.written ? 'Write it up again' : 'Write it up',
-            title: 'Ask the model to phrase these lines the way you would in a channel',
-            disabled: !!this.report?.empty,
+            class: this.outdated ? 'primary' : '',
+            text: this.outdated ? 'Update the write-up' : this.written ? 'Write it up again' : 'Write it up',
+            title: this.outdated
+              ? 'Rewrite, taking in your edits and anything that has changed on the board'
+              : 'Ask the model to phrase these lines the way you would in a channel',
+            disabled: !!this.report?.empty && !this.touched,
             on: { click: () => this.writeUp() },
           }),
           // Only once there is something to revert. The draft rebuilds itself on
@@ -264,12 +279,28 @@ export class StandupView {
           el('div', { class: 'hint', text: 'Adds the tasks already in progress or blocked. Most morning messages are just a greeting, so this starts off.' }))));
   }
 
-  /** Ask a model to phrase the day's lines the way a colleague would. */
+  /**
+   * Ask a model to phrase the day's lines the way a colleague would.
+   *
+   * Reads the state fresh every time, which it did not used to: the payload came from
+   * the report built at the last rebuild, and typing in the box suppresses rebuilds,
+   * so pressing this after editing sent a stale day AND threw the edits away. Now the
+   * log is re-read here, and anything you have written is sent along to be kept.
+   */
   async writeUp() {
     const endpoint = this.app.endpoint;
     const problem = endpointProblem(endpoint);
     if (problem) { this.error = problem; this.app.refresh(); return; }
-    if (this.report?.empty) { toast('Nothing logged today to write up.', 'error'); return; }
+
+    const mine = this.touched ? (this.draft || '').trim() : '';
+    this.report = buildReport({
+      tasks: this.app.tasks,
+      events: this.app.state.events,
+      kind: this.kind,
+      date: todayISO(),
+      includePlan: this.includePlan,
+    });
+    if (this.report.empty && !mine) { toast('Nothing logged today to write up.', 'error'); return; }
 
     const includeNotes = this.app.settings.sendNotes !== false;
     const payload = modelPayload(this.report, { includeNotes });
@@ -279,7 +310,7 @@ export class StandupView {
       endpoint,
       tasks: [],
       includeNotes,
-      text: JSON.stringify(payload, null, 1),
+      text: [JSON.stringify(payload, null, 1), mine].filter(Boolean).join('\n\n'),
     })) return;
 
     this.busy = true;
@@ -291,6 +322,7 @@ export class StandupView {
       const groups = await writeStandup({
         endpoint,
         payload,
+        draft: mine,
         includeNotes,
         onProgress: ({ text, progress }) => {
           this.progressEl.textContent = `${text}${progress ? ` (${Math.round(progress * 100)}%)` : ''}`;
@@ -299,6 +331,10 @@ export class StandupView {
       this.written = groups;
       this.draft = this.text();
       this.touched = false;
+      // What the write-up accounted for, so a later card move or edit can be noticed
+      // and offered as an Update rather than leaving yesterday's phrasing on screen.
+      this.writtenAt = this.app.state.lastEventTs;
+      this.builtAt = this.app.state.lastEventTs;
       toast(this.app.onRules
         ? 'Grouped by the demo interpreter — a real provider rewrites the lines.'
         : 'Written up. Read it before you copy it.');

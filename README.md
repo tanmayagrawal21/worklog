@@ -96,6 +96,8 @@ a model the way a demonstrated one does, so four example pairs carry the shape. 
 grouped lines and nothing else — layout, the first line and your edits are never its to decide — and
 its answer is clamped: no more lines than there were pieces of work, so a model that starts
 narrating cannot invent a workstream, with bullets, status labels and task ids stripped back out.
+Press it after editing and your text goes too, to be kept and tidied rather than thrown away — and
+your own lines raise that cap, because then your text is the authority on what belongs in there.
 
 Three more things worth knowing:
 
@@ -247,7 +249,7 @@ copy of the app still opens in an older one.
 ./scripts/test.sh
 ```
 
-247 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo, github and
+251 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo, github and
 the two standup suites — one of which renders the pane against a
 [fake DOM](test/fake-dom.js), because a view that throws on render is invisible to a test that
 never runs the renderer. Plus 26 more that

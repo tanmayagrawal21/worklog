@@ -653,19 +653,37 @@ function standupShots() {
  *
  * @returns {Promise<Array<{project: string, lines: string[]}>>}
  */
-export async function writeStandup({ endpoint, payload, includeNotes = true, onProgress }) {
+export async function writeStandup({ endpoint, payload, draft = '', includeNotes = true, onProgress }) {
   const items = Array.isArray(payload) ? payload : [];
-  if (!items.length) throw new AIError('Nothing logged for today, so there is nothing to write up.');
+  const keep = String(draft || '').trim();
+  if (!items.length && !keep) throw new AIError('Nothing logged for today, so there is nothing to write up.');
 
-  if (endpoint?.kind === 'rules') return ruleStandup(items);
+  if (endpoint?.kind === 'rules') return ruleStandup(items, keep);
+
+  // A draft means the engineer has already written something, and their words beat
+  // ours: the job becomes tidying what they wrote and filling in what they missed.
+  // Sent as ONE user message so the shots above stay the pattern being followed --
+  // and because a second consecutive user turn upsets some gateways.
+  const ask = keep
+    ? [
+      JSON.stringify(items),
+      '',
+      'The engineer has already written this report themselves:',
+      '',
+      keep,
+      '',
+      'Keep their wording, their lines and their order, and do not drop anything they wrote.'
+        + ' Use the items above only to tidy phrasing and to add work they left out.',
+    ].join('\n')
+    : JSON.stringify(items);
 
   const raw = await chat(endpoint, [
     { role: 'system', content: STANDUP_SYSTEM },
     ...standupShots(),
-    { role: 'user', content: JSON.stringify(items) },
+    { role: 'user', content: ask },
   ], { schema: STANDUP_SCHEMA, temperature: 0.4, onProgress });
 
-  return clampStandup(parseJSONLoose(raw), items, { includeNotes });
+  return clampStandup(parseJSONLoose(raw), items, { includeNotes, draft: keep });
 }
 
 /**
@@ -676,15 +694,20 @@ export async function writeStandup({ endpoint, payload, includeNotes = true, onP
  * it added back, no internal task ids, and projects it did not get from us are
  * dropped rather than becoming a heading nobody recognises.
  */
-export function clampStandup(parsed, items, { includeNotes = true } = {}) {
+export function clampStandup(parsed, items, { includeNotes = true, draft = '' } = {}) {
   const known = new Set(items.map((i) => i.project || ''));
-  const budget = Math.max(items.length, 1);
+  // A hand-written draft raises both limits, because then the engineer's own text is
+  // the authority on what belongs in the report: they may have written eight lines
+  // about three tasks, or named a project the board has never heard of.
+  const written = String(draft || '').split('\n').filter((l) => l.trim()).length;
+  const budget = Math.max(items.length, written, 1);
+  const trustDraft = !!written;
   const out = [];
   let used = 0;
 
   for (const g of Array.isArray(parsed?.groups) ? parsed.groups : []) {
     const project = typeof g?.project === 'string' ? g.project.trim() : '';
-    if (project && !known.has(project)) continue;
+    if (project && !trustDraft && !known.has(project)) continue;
 
     const lines = [];
     for (const raw of Array.isArray(g?.lines) ? g.lines : []) {
@@ -717,7 +740,10 @@ export function clampStandup(parsed, items, { includeNotes = true } = {}) {
  * Deliberately not clever — the point of the demo's interpreter is to show the shape
  * of the flow, and pretending to rewrite prose with keyword rules would be a lie.
  */
-function ruleStandup(items) {
+function ruleStandup(items, draft = '') {
+  // Nothing a keyword rule can add to text a person wrote, so it is handed back.
+  if (draft) return [{ project: '', lines: draft.split('\n').filter((l) => l.trim()) }];
+
   const byProject = new Map();
   for (const i of items) {
     const key = i.project || '';
