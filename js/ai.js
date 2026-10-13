@@ -517,6 +517,216 @@ function clampSummary(p, tasks) {
   };
 }
 
+/* ---------- flow 3: the report you post to your team --------------------- */
+
+const STANDUP_SCHEMA = {
+  name: 'standup_report',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['groups'],
+    properties: {
+      groups: {
+        type: 'array',
+        description: 'One per project. Keep the project strings exactly as given.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['project', 'lines'],
+          properties: {
+            project: { type: 'string', description: 'Copied exactly from the input, or "" if the input had none.' },
+            lines: {
+              type: 'array',
+              items: { type: 'string', description: 'One thing done. Verb first, no bullet character, no task id.' },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const STANDUP_SYSTEM = `You write one engineer's end-of-day report for their team channel.
+
+This is NOT a summary and NOT an executive briefing. It is the plain list a working engineer posts at 5pm so colleagues know what moved.
+
+Style, which the examples demonstrate — follow them over any instinct of your own:
+- VERB FIRST, past tense, concrete. "Fixed the tcp buffer sizing", not "Work on buffers" and not "Buffer sizing task".
+- Say what the change DOES or what you LEARNED when the input tells you, in the same line, after a full stop. Keep it to one or two clauses.
+- One line per piece of work. Merge two inputs into one line when they are the same piece of work.
+- Keep ticket ids, repo names, paths, URLs and numbers exactly as written. They are the useful part.
+- NEVER write status words as labels or headings: no "Done:", no "In progress:", no "Blocked:", no "Status:". If something is stuck or unfinished, say it the way a person would — "waiting on the security team", "still digging", "did not get far".
+- No preamble, no sign-off line, no "Today I", no summarising sentence at the end. Lines only.
+- Never invent work, numbers, names or outcomes that the input does not contain. Fewer lines is correct when the input is thin.
+- Never output an internal task id (anything shaped like T-a1b2c3).`;
+
+/*
+ * Few-shot, because this is a style transfer job and a described style does not
+ * survive contact with a model the way a demonstrated one does. The four pairs are
+ * shaped on how people on this team actually report: a terse lowercase-fragment
+ * writer, a "Verbed X. What it does." writer, one who merges related work into a
+ * single line, and one who writes a project as flowing prose with the finding in it.
+ * Content is invented; only the shapes are borrowed.
+ */
+const STANDUP_SHOTS = [
+  {
+    in: [
+      { project: 'AI-Assistant', task: 'point docs at the new domain', didToday: 'swapped the CNAME and fixed the broken /docs links' },
+      { project: 'AI-Assistant', task: 'add the new model ids' },
+      { project: 'GenAI', task: 'external web search spike', didToday: 'empty responses turned out to be a quota error, not our code' },
+    ],
+    out: {
+      groups: [
+        { project: 'AI-Assistant', lines: ['moved docs to the new domain and fixed the broken /docs links', 'added the new model ids'] },
+        { project: 'GenAI', lines: ['debugged the empty responses from web search — it was a quota error on their side, not our code'] },
+      ],
+    },
+  },
+  {
+    in: [
+      { project: 'go-irodsclient', task: 'tcp buffer setting bugs', didToday: 'wrong size was being applied on reconnect' },
+      { project: 'go-irodsclient', task: 'cover small file upload and download in tests' },
+    ],
+    out: {
+      groups: [
+        {
+          project: 'go-irodsclient',
+          lines: [
+            'Fixed tcp buffer setting bugs — the wrong size was being applied on reconnect',
+            'Updated tests to cover small file upload and download',
+          ],
+        },
+      ],
+    },
+  },
+  {
+    in: [
+      { project: 'AI Assistant', task: 'custom error pages', didToday: 'added pages for user and workspace permission errors' },
+      { project: 'AI Assistant', task: 'logout button for errored users', didToday: 'still showing nothing when /users/mine itself errors' },
+    ],
+    out: {
+      groups: [
+        {
+          project: 'AI Assistant',
+          lines: [
+            'Added custom error pages and improved handling for user and workspace permission errors',
+            'Working on showing the user menu and logout button when the user is logged in but /users/mine errors',
+          ],
+        },
+      ],
+    },
+  },
+  {
+    in: [
+      { project: 'MDRepo', task: 'review page for ingest approvals', didToday: 'added a Gates page, working well in testing' },
+      { project: 'MDRepo', task: 'paper search', didToday: 'fixed two bugs; lots of the papers turn out to be paywalled, asking Travis what to do' },
+    ],
+    out: {
+      groups: [
+        {
+          project: 'MDRepo',
+          lines: [
+            "Added a 'Gates' page to review the human-in-the-loop approvals for each ingest attempt. Working well in testing so far",
+            'Found and fixed a couple of issues with how we search for papers, and discovered many of them are behind paywalled publishers — talking to Travis about whether we deal with that at all',
+          ],
+        },
+      ],
+    },
+  },
+];
+
+/** The messages that teach the style. Built once per call; cheap and stateless. */
+function standupShots() {
+  return STANDUP_SHOTS.flatMap((s) => [
+    { role: 'user', content: JSON.stringify(s.in) },
+    { role: 'assistant', content: JSON.stringify(s.out) },
+  ]);
+}
+
+/**
+ * Rewrite the day into the lines a colleague would actually post.
+ *
+ * The mechanical draft in standup.js is already correct; what it cannot do is phrase
+ * the work the way a person does, because that is a rewriting job rather than a
+ * lookup. Returns groups only — the caller renders them, so the layout, the first
+ * line and your own edits are never the model's to decide.
+ *
+ * @returns {Promise<Array<{project: string, lines: string[]}>>}
+ */
+export async function writeStandup({ endpoint, payload, includeNotes = true, onProgress }) {
+  const items = Array.isArray(payload) ? payload : [];
+  if (!items.length) throw new AIError('Nothing logged for today, so there is nothing to write up.');
+
+  if (endpoint?.kind === 'rules') return ruleStandup(items);
+
+  const raw = await chat(endpoint, [
+    { role: 'system', content: STANDUP_SYSTEM },
+    ...standupShots(),
+    { role: 'user', content: JSON.stringify(items) },
+  ], { schema: STANDUP_SCHEMA, temperature: 0.4, onProgress });
+
+  return clampStandup(parseJSONLoose(raw), items, { includeNotes });
+}
+
+/**
+ * The model is untrusted input, and this output goes to the user's colleagues.
+ *
+ * So: no more lines than there were pieces of work (a model that starts narrating
+ * cannot invent a workstream), nothing longer than a chat line, no bullet characters
+ * it added back, no internal task ids, and projects it did not get from us are
+ * dropped rather than becoming a heading nobody recognises.
+ */
+export function clampStandup(parsed, items, { includeNotes = true } = {}) {
+  const known = new Set(items.map((i) => i.project || ''));
+  const budget = Math.max(items.length, 1);
+  const out = [];
+  let used = 0;
+
+  for (const g of Array.isArray(parsed?.groups) ? parsed.groups : []) {
+    const project = typeof g?.project === 'string' ? g.project.trim() : '';
+    if (project && !known.has(project)) continue;
+
+    const lines = [];
+    for (const raw of Array.isArray(g?.lines) ? g.lines : []) {
+      if (used >= budget) break;
+      const text = String(raw || '')
+        .replace(/\s+/g, ' ')
+        .replace(/^[-*••]\s*/, '')          // a bullet we are about to add ourselves
+        .replace(/\bT-[0-9a-z]{6}\b/g, '')       // internal ids are not for this audience
+        .replace(/^(done|in progress|blocked|in review|status)\s*[:–-]\s*/i, '')
+        .trim()
+        .slice(0, 400);
+      if (!text) continue;
+      lines.push(text);
+      used++;
+    }
+    if (lines.length) out.push({ project, lines });
+    if (used >= budget) break;
+  }
+
+  // A model that answered with nothing usable is a failure, not an empty report:
+  // silently handing back a blank box would look like the day had no work in it.
+  if (!out.length) {
+    throw new AIError('The model did not return a usable report. Try again, or copy the draft as it is.', { retryable: true });
+  }
+  return includeNotes ? out : out.map((g) => ({ ...g, lines: g.lines.map((l) => l.split(' — ')[0]) }));
+}
+
+/**
+ * The no-model path for the demo: group the input as given, in the user's own words.
+ * Deliberately not clever — the point of the demo's interpreter is to show the shape
+ * of the flow, and pretending to rewrite prose with keyword rules would be a lie.
+ */
+function ruleStandup(items) {
+  const byProject = new Map();
+  for (const i of items) {
+    const key = i.project || '';
+    if (!byProject.has(key)) byProject.set(key, []);
+    byProject.get(key).push(i.didToday || i.task);
+  }
+  return [...byProject.entries()].map(([project, lines]) => ({ project, lines }));
+}
+
 /* ---------- applying proposals ------------------------------------------- */
 
 /**

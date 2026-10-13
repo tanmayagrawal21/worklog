@@ -87,6 +87,25 @@ check('a day that went right is left alone', () => {
     'nothing staged and the summary written is not worth interrupting');
 });
 
+check('an unsent sign-off is its own reason', () => {
+  const r = reminderDue({ at: '17:30', now: at(18), hasPending: false, hasEveningSummary: true, hasSignOff: false });
+  ok(r.due);
+  eq(r.reason, 'signoff');
+  eq(r.missing, ['signoff']);
+});
+
+check('a day missing two things names both', () => {
+  // The dialog builds its sentence from `missing`, so losing one here loses it there.
+  const r = reminderDue({ at: '17:30', now: at(18), hasPending: false, hasEveningSummary: false, hasSignOff: false });
+  eq(r.missing, ['summary', 'signoff']);
+});
+
+check('sign-offs default to "sent", so nothing new nags an existing user', () => {
+  // Someone who has never used the Standup pane must not acquire a daily obligation
+  // just by updating the app.
+  ok(!reminderDue({ at: '17:30', now: at(18), hasPending: false, hasEveningSummary: true }).due);
+});
+
 check('no configured time means never', () => {
   ok(!reminderDue({ at: '', now: at(23), hasPending: true }).due);
   ok(!reminderDue({ at: 'evening', now: at(23), hasPending: true }).due);

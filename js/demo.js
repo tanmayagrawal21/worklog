@@ -82,6 +82,17 @@ export function demoEvents() {
     task(60, ID.hiring, 'Review two take-home submissions', 'backlog', 'normal', ['hiring']),
     task(50, ID.spike, 'Spike: is the queue the right shape for fan-out?', 'backlog', 'low', ['ingest', 'spike']),
 
+    // Today, specifically. The rest of the week is what the board and the wiki need,
+    // but a sign-off report describes the day you are in -- without these the Standup
+    // pane correctly reports that nothing happened today, which demonstrates nothing.
+    // Two on one project so the grouping is visible, and one of each kind of line:
+    // a bare finish, a note on standing work, and a move into review.
+    ev(6, 'task.note', { taskId: ID.retry, text: 'Dead-letter queue drained. Nothing stuck since the backoff change.' }),
+    ev(5.5, 'task.note', { taskId: ID.migrate, text: 'Fallback path reviewed; ready to flip the flag the moment the auth review lands.' }),
+    ev(5, 'task.note', { taskId: ID.flake, text: 'Injected the clock instead of sleeping on it. Green under --repeat 200.' }),
+    ev(4.5, 'task.status', { taskId: ID.flake, from: 'in_progress', to: 'review' }),
+    ev(2, 'task.status', { taskId: ID.oncall, from: 'todo', to: 'done' }),
+
     ev(4, 'summary.set', {
       date: todayISO(),
       kind: 'morning',

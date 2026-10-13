@@ -185,6 +185,7 @@ export const afterThrough = (e, through) => !through
 export function foldEvents(events, { base = null } = {}) {
   const tasks = new Map();
   const summaries = {};
+  const standups = {};
   let skipped = 0;
 
   for (const t of base || []) {
@@ -200,6 +201,13 @@ export function foldEvents(events, { base = null } = {}) {
   for (const e of sortEvents(events)) {
     if (e.type === 'summary.set') {
       (summaries[e.date] ||= {})[e.kind] = { ...e.summary, ts: e.ts, model: e.model };
+      continue;
+    }
+
+    // Last one wins, like a summary: re-copying an edited sign-off supersedes the
+    // one recorded an hour earlier rather than appending a second report for the day.
+    if (e.type === 'standup.set') {
+      (standups[e.date] ||= {})[e.kind] = { text: e.text, style: e.style, ts: e.ts };
       continue;
     }
 
@@ -260,7 +268,7 @@ export function foldEvents(events, { base = null } = {}) {
 
   for (const t of resorted) t.notes.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
 
-  return { tasks, summaries, skipped };
+  return { tasks, summaries, standups, skipped };
 }
 
 /* ---------- the event files ---------------------------------------------- */
@@ -270,7 +278,7 @@ export function foldEvents(events, { base = null } = {}) {
  * Stable order means a git diff shows the change, not a reshuffle.
  */
 const EVENT_KEYS = ['ts', 'type', 'taskId', 'date', 'kind', 'title', 'status',
-  'from', 'to', 'priority', 'tags', 'private', 'text', 'fields', 'summary', 'model', 'id'];
+  'from', 'to', 'priority', 'tags', 'private', 'text', 'fields', 'summary', 'model', 'style', 'id'];
 
 function orderEvent(e) {
   const out = {};
@@ -305,6 +313,7 @@ function describeEvent(e, tasks) {
     case 'task.edit':   return `${ref}: edited ${Object.keys(e.fields || {}).join(', ')}`;
     case 'task.delete': return `${ref}: removed`;
     case 'summary.set': return `${e.kind} summary for ${e.date}`;
+    case 'standup.set': return `${e.kind} report posted for ${e.date}`;
     default:            return `${e.type} ${e.taskId || ''}`.trim();
   }
 }
@@ -319,6 +328,7 @@ function buildCommitMessage(events, tasks) {
   if (counts['task.edit'])   bits.push(`${counts['task.edit']} edited`);
   if (counts['task.delete']) bits.push(`${counts['task.delete']} removed`);
   if (counts['summary.set']) bits.push('summary');
+  if (counts['standup.set']) bits.push('report');
 
   const subject = `worklog ${todayISO()}: ${bits.join(', ') || `${events.length} changes`}`;
   const body = events.map((e) => `- ${describeEvent(e, tasks)}`).join('\n');
@@ -362,9 +372,20 @@ export function renderMonthMd(month, events, tasks) {
   for (const d of days) {
     const all = byDay.get(d);
     const sums = all.filter((e) => e.type === 'summary.set');
-    const rest = all.filter((e) => e.type !== 'summary.set');
+    const reports = all.filter((e) => e.type === 'standup.set');
+    const rest = all.filter((e) => !['summary.set', 'standup.set'].includes(e.type));
 
     out.push(`## ${d} — ${weekdayOf(d)}`, '');
+
+    // Quoted, not inlined. Two reasons: it is verbatim text that went somewhere else,
+    // which a quote says better than a paragraph; and a report written in the markdown
+    // style contains its own "## Project" lines, which would otherwise break out and
+    // become headings of this page.
+    for (const r of reports) {
+      out.push(`**${r.kind} report**`, '');
+      for (const line of String(r.text || '').split('\n')) out.push(line.trim() ? `> ${line}` : '>');
+      out.push('');
+    }
 
     for (const s of sums) {
       if (s.summary?.headline) out.push(`**${s.kind} summary** — ${s.summary.headline}`, '');

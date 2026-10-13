@@ -7,7 +7,7 @@
  */
 import './shim.js';
 import { check, checkAsync, eq, ok, report } from './shim.js';
-import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise } from '../js/ai.js';
+import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise, clampStandup, writeStandup } from '../js/ai.js';
 import { foldEvents } from '../js/store.js';
 
 const task = (over = {}) => ({
@@ -232,5 +232,77 @@ await checkAsync('a pinned temperature is dropped and the request retried', asyn
   }
 });
 
+
+print('\n--- the standup write-up: the model is writing to the user\'s colleagues ---');
+
+/* What the model was given, so the clamp has something to check its answer against. */
+const DAY_ITEMS = [
+  { project: 'AI Verde', task: 'retry on reconnect', didToday: 'fixed the buffer size' },
+  { project: 'AI Verde', task: 'model ids' },
+  { project: 'tests', task: 'flaky scheduler test' },
+];
+
+check('a clean answer passes through', () => {
+  const out = clampStandup({ groups: [{ project: 'AI Verde', lines: ['Fixed the retry on reconnect', 'added the new model ids'] }] }, DAY_ITEMS);
+  eq(out, [{ project: 'AI Verde', lines: ['Fixed the retry on reconnect', 'added the new model ids'] }]);
+});
+
+check('it cannot invent more work than there was', () => {
+  // A model that starts narrating must not be able to add a workstream nobody worked
+  // on -- this text goes to colleagues who cannot tell the difference.
+  const many = { groups: [{ project: 'AI Verde', lines: Array.from({ length: 20 }, (_, i) => `line ${i}`) }] };
+  const out = clampStandup(many, DAY_ITEMS);
+  eq(out[0].lines.length, 3, 'capped at the number of real items');
+});
+
+check('a project nobody worked on is dropped, not made into a heading', () => {
+  const out = clampStandup({
+    groups: [
+      { project: 'Acquisitions', lines: ['Closed the Series B'] },
+      { project: 'tests', lines: ['Fixed the flaky scheduler test'] },
+    ],
+  }, DAY_ITEMS);
+  eq(out.map((g) => g.project), ['tests']);
+});
+
+check('bullets, status labels and task ids are stripped back out', () => {
+  const out = clampStandup({
+    groups: [{ project: 'tests', lines: ['- Done: fixed the flaky test in T-abc123'] }],
+  }, DAY_ITEMS);
+  eq(out[0].lines[0], 'fixed the flaky test in', 'no bullet, no "Done:" label, no internal id');
+});
+
+check('nothing usable is an error, not a blank report', () => {
+  // Silently handing back an empty box would read as "I did nothing today".
+  let threw = null;
+  try { clampStandup({ groups: [] }, DAY_ITEMS); } catch (e) { threw = e; }
+  ok(threw, 'an unusable answer must reject');
+  ok(/draft/.test(threw.message), `and point somewhere useful: ${threw?.message}`);
+});
+
+check('withholding notes keeps the work and drops the trailing detail', () => {
+  const out = clampStandup(
+    { groups: [{ project: 'tests', lines: ['Fixed the flaky scheduler test — it was wall-clock ordering'] }] },
+    DAY_ITEMS,
+    { includeNotes: false },
+  );
+  eq(out[0].lines[0], 'Fixed the flaky scheduler test');
+});
+
+await checkAsync('an empty day refuses before any request is made', async () => {
+  let threw = null;
+  await writeStandup({ endpoint: { kind: 'http', baseUrl: 'http://x/v1', model: 'm' }, payload: [] })
+    .catch((e) => { threw = e; });
+  ok(threw, 'a write-up with nothing to write up must reject');
+  ok(/nothing/i.test(threw.message), threw?.message);
+});
+
+await checkAsync('the demo interpreter groups the day without pretending to rewrite it', async () => {
+  const out = await writeStandup({ endpoint: { kind: 'rules' }, payload: DAY_ITEMS });
+  eq(out, [
+    { project: 'AI Verde', lines: ['fixed the buffer size', 'model ids'] },
+    { project: 'tests', lines: ['flaky scheduler test'] },
+  ]);
+});
 
 quit(report('ai.js'));

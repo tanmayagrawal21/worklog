@@ -652,4 +652,59 @@ check('every status has a human label', () => {
   for (const s of STATUSES) ok(statusLabel(s.id) && statusLabel(s.id) !== s.id, `missing label for ${s.id}`);
 });
 
+print('\n--- sign-off reports in the log ---');
+
+const REPORT = ev('2026-09-17T17:30:00.000Z', 'standup.set', {
+  date: '2026-09-17', kind: 'evening', text: 'Signing off:\n\n## AI Assistant\n\n- Finished the api', style: 'markdown',
+});
+
+check('a report folds into state by date and kind', () => {
+  const { standups } = foldEvents([REPORT]);
+  eq(standups['2026-09-17'].evening.text, 'Signing off:\n\n## AI Assistant\n\n- Finished the api');
+  eq(standups['2026-09-17'].evening.style, 'markdown');
+});
+
+check('re-copying an edited report supersedes the earlier one', () => {
+  const { standups } = foldEvents([
+    REPORT,
+    ev('2026-09-17T18:00:00.000Z', 'standup.set', { date: '2026-09-17', kind: 'evening', text: 'the edited one' }),
+  ]);
+  eq(standups['2026-09-17'].evening.text, 'the edited one', 'one report per kind per day, last one wins');
+});
+
+check('a report needs no new layout: it is one more line in the month file', () => {
+  // The claim this protects: adding sign-offs changed no path and no schema. If this
+  // ever fails, something started writing a second place for reports to live.
+  const json = JSON.parse(serialiseMonth('2026-09', [REPORT]));
+  eq(json.count, 1);
+  eq(json.events[0].type, 'standup.set');
+  eq(Object.keys(json.events[0]).slice(0, 5), ['ts', 'type', 'date', 'kind', 'text'],
+    'field order comes from the existing EVENT_KEYS, so no key had to be invented');
+});
+
+check('an unknown event type is skipped rather than fatal', () => {
+  // Which is what lets a repo written by this version still load in an older copy
+  // of the app: the report events are ignored, not a crash.
+  const { tasks, skipped } = foldEvents([
+    ev('2026-09-17T09:00:00.000Z', 'task.create', { taskId: T1, title: 'x' }),
+    ev('2026-09-17T19:00:00.000Z', 'standup.fromTheFuture', { date: '2026-09-17' }),
+  ]);
+  eq(tasks.size, 1);
+  eq(skipped, 1);
+});
+
+check('the month page quotes the report instead of letting its headings escape', () => {
+  const md = renderMonthMd('2026-09', [REPORT], new Map());
+  ok(md.includes('**evening report**'), 'the day should name the report');
+  ok(md.includes('> ## AI Assistant'), `a markdown-styled report must be quoted, not inlined:\n${md}`);
+  ok(!/^## AI Assistant/m.test(md), 'otherwise the report takes over the page heading structure');
+  ok(!md.includes('| 17:30 |'), 'and it does not also appear as a row in the change table');
+});
+
+check('a report still shows up in the commit subject', () => {
+  const s = new Store(fakeRepo);
+  s.stage(REPORT);
+  ok(/report/.test(s.previewCommit().message), s.previewCommit().message);
+});
+
 quit(report('store.js'));

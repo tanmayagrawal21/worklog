@@ -111,6 +111,33 @@ export function toast(message, kind = '') {
   setTimeout(() => t.remove(), kind === 'error' ? 6500 : 3200);
 }
 
+/**
+ * Put text on the clipboard, resolving to whether it worked.
+ *
+ * The async Clipboard API needs a secure context and a user gesture, both of which
+ * hold for a button click on the deployed page — but not on a plain http:// copy of
+ * it, which is exactly how someone opens this from a file server. So the old
+ * execCommand path stays as a fallback rather than letting Copy silently do nothing.
+ */
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* fall through to the legacy path */ }
+
+  try {
+    const ta = el('textarea', { style: 'position:fixed;top:-1000px;left:-1000px' });
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export const notice = (kind, text) => el('div', { class: `notice ${kind}`, text });
 export const spinner = (label) => el('div', { class: 'loading' }, el('span', { class: 'spinner' }), label || 'Working…');
 

@@ -21,6 +21,7 @@ import { el, add, clear, dialog, confirm, toast, notice, spinner, plural, shortT
 import { BoardView, newTaskDialog } from './ui/board.js';
 import { BraindumpView } from './ui/braindump.js';
 import { SummaryView } from './ui/summary.js';
+import { StandupView } from './ui/standup.js';
 import { WikiView } from './ui/wiki.js';
 import { settingsDialog } from './ui/settings.js';
 import { resolveEndpoint, endpointProblem, PROVIDERS } from './providers.js';
@@ -52,6 +53,7 @@ const VIEWS = Object.freeze([
   ['board', 'Board'],
   ['braindump', 'Brain dump'],
   ['summary', 'Summary'],
+  ['standup', 'Standup'],
   ['wiki', 'Wiki'],
 ]);
 
@@ -90,6 +92,7 @@ class App {
       board: new BoardView(this),
       braindump: new BraindumpView(this),
       summary: new SummaryView(this),
+      standup: new StandupView(this),
       wiki: new WikiView(this),
     };
 
@@ -175,6 +178,8 @@ class App {
 
   get tasks() { return this.store ? this.store.tasks : []; }
   get hasPending() { return !!this.store?.hasPending; }
+  /** Whether reports are part of this person's day at all — see checkReminder(). */
+  get everSignedOff() { return Object.keys(this.state.standups || {}).length > 0; }
   get configured() { return !!(this.settings.owner && this.settings.repo); }
 
   /** Where AI requests go, resolved fresh so a settings change takes effect at once. */
@@ -450,11 +455,14 @@ class App {
     // Never in the demo: there is nothing to lose and nothing to publish.
     if (this.demo || !this.store || this._reminderOpen) return;
 
-    const { due, reason, today } = reminderDue({
+    const { due, missing, today } = reminderDue({
       at: this.settings.reminderAt,
       lastFired: this.settings.reminderLastFired,
       hasPending: this.hasPending,
       hasEveningSummary: !!this.state?.summaries?.[todayISO()]?.evening,
+      // Only nagged about once you have actually started sending reports. Someone who
+      // has never opened the Standup pane does not want a new daily obligation.
+      hasSignOff: !this.everSignedOff || !!this.state?.standups?.[todayISO()]?.evening,
     });
     if (!due) return;
 
@@ -463,23 +471,27 @@ class App {
     this.saveSettings({ reminderLastFired: today });
     this._reminderOpen = true;
 
-    const lines = {
-      pending: `${plural(this.store.pending.length, 'change')} staged in this browser and not yet in your repo.`,
-      summary: 'No evening summary for today yet.',
-      both: `${plural(this.store.pending.length, 'change')} not yet in your repo, and no evening summary for today.`,
-    };
+    // Built from the parts rather than looked up by a single label, so a day that is
+    // missing two different things says both instead of picking one.
+    const bits = [
+      this.hasPending ? `${plural(this.store.pending.length, 'change')} staged in this browser and not yet in your repo` : null,
+      missing.includes('summary') ? 'no evening summary for today' : null,
+      missing.includes('signoff') ? "today's sign-off report not sent" : null,
+    ].filter(Boolean);
 
     const { done } = dialog({
       title: 'End of the day',
       body: el('div', {},
-        el('p', { text: lines[reason] }),
+        el('p', { text: `${bits.join(', and ')}.` }),
         el('p', { class: 'sub', text: 'Staged changes survive a reload, but they only exist in this browser — a cleared profile or another machine will not have them.' })),
       buttons: [
         { label: 'Turn this off', value: 'off' },
         { label: 'Not now', value: false },
         this.hasPending
           ? { label: 'Publish…', class: 'primary', value: 'publish' }
-          : { label: 'Write it', class: 'primary', value: 'summary' },
+          : missing.includes('signoff')
+            ? { label: 'Write the report', class: 'primary', value: 'standup' }
+            : { label: 'Write it', class: 'primary', value: 'summary' },
       ],
     });
 
@@ -490,8 +502,8 @@ class App {
       toast('Reminder off. Settings has it if you want it back.');
     } else if (choice === 'publish') {
       await this.publish();
-    } else if (choice === 'summary') {
-      this.go('summary');
+    } else if (choice === 'summary' || choice === 'standup') {
+      this.go(choice);
     }
   }
 

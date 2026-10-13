@@ -50,17 +50,63 @@ built-in interpreter standing in for the model, so the brain dump and the summar
 2. Either **drag cards** on the board, or **brain-dump a paragraph** and let the AI propose
    changes — every proposal comes with a checkbox, and nothing is applied until you check it.
 3. At end of day, brain-dump again and take the evening summary.
-4. Hit **Publish**. You see the exact commit message and file list *before* anything is pushed.
+4. Open **Standup** and copy the sign-off report for your team.
+5. Hit **Publish**. You see the exact commit message and file list *before* anything is pushed.
 
 Staging is local, which is the point — but it does mean unpublished work lives in one browser and
 nowhere else. So the header carries a count of what is unpublished that you can *click* to read the
 list, closing the tab with staged changes asks first, and an end-of-day reminder (17:30 local by
-default, one click to turn off, in Settings to change) speaks up if something is unpushed or the
-evening summary is missing.
+default, one click to turn off, in Settings to change) speaks up if something is unpushed, the
+evening summary is missing, or — once you have started sending them — today's sign-off report has
+not gone out.
 
 Alongside the board there's a **wiki** view: one page per task with its whole history, pages per
 tag, and a dated journal page per day. Task ids written in notes (`blocked by T-4f9a2c`, or
 `[[T-4f9a2c]]`) become real links, so notes accumulate into a connected record.
+
+## The report you owe your team
+
+Most teams want a line in a channel at the end of the day. The **Standup** pane writes it from your
+log rather than from memory, which is the hard part at 6pm:
+
+```text
+Signing off:
+
+ingest
+Dead-letter queue drained. Nothing stuck since the backoff change
+Fallback path reviewed; ready to flip the flag the moment the auth review lands
+
+tests
+Injected the clock instead of sleeping on it. Green under --repeat 200
+```
+
+**The line is your note, not the task title.** A note is already the sentence these reports are made
+of — "Injected the clock instead of sleeping on it" is what you did, while "Flaky test in the
+scheduler suite" is a backlog entry. The title is the fallback for work you moved without writing
+anything down. One line per task, however many times you touched it.
+
+**No status vocabulary.** No `Done:`, no `In progress:`, no `Blocked:` — not as headings and not as
+markers on a line. Nobody writes their day that way; a channel wants the work, and anything worth
+flagging you will say in your own words. Grouping is your first tag or one flat list, with a
+markdown switch for `##` headings and `-` bullets where markdown renders.
+
+**Write it up** hands those lines to a model to phrase the way a colleague would — verb-first, with
+the outcome folded in. It is [multi-shot](js/ai.js): a described style does not survive contact with
+a model the way a demonstrated one does, so four example pairs carry the shape. The model returns
+grouped lines and nothing else — layout, the first line and your edits are never its to decide — and
+its answer is clamped: no more lines than there were pieces of work, so a model that starts
+narrating cannot invent a workstream, with bullets, status labels and task ids stripped back out.
+
+Three more things worth knowing:
+
+- **It works with AI switched off.** The draft above is computed from the event log. The write-up is
+  an extra, not the path.
+- **Your internal task ids never appear**, in the text or in the prompt. `T-4f9a2c` means nothing to
+  anyone else in the channel. The summary pane uses ids because it is written for you; this one is
+  not. Tasks marked private are excluded, and note text can be withheld from the model in Settings.
+- **Copying records it**, as the text you actually copied — edits and all. A report you sent is a
+  fact about the day, so it lands in the repo beside the work, and the end-of-day reminder stops
+  asking once it has gone out.
 
 ## AI is a choice, and "none" is one of them
 
@@ -189,14 +235,22 @@ tomorrow, which is where this started.
 Repos written by the earlier flat layout still load, and the app offers a one-commit upgrade
 (behind the same preview-and-confirm gate as any other push).
 
+New kinds of entry arrive as new event **types**, not new files — a summary (`summary.set`) and a
+sign-off report (`standup.set`) are both just lines in the month they happened in, carrying a
+`date` and a `kind` instead of a `taskId`. Nothing about the layout above changes, the schema
+version does not move, and `fold()` skips types it does not recognise, so a repo written by a newer
+copy of the app still opens in an older one.
+
 ## Tests
 
 ```sh
 ./scripts/test.sh
 ```
 
-188 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo and github,
-plus 26 more that
+245 assertions across store, ai, time, providers, rules, consent, reminder, dom, demo, github and
+the two standup suites — one of which renders the pane against a
+[fake DOM](test/fake-dom.js), because a view that throws on render is invisible to a test that
+never runs the renderer. Plus 26 more that
 exercise the CLI — run under JavaScriptCore, which ships with macOS, so there are no dev
 dependencies either. Every suite is then re-run under `Pacific/Kiritimati` (UTC+14), `Pacific/Niue`
 (UTC-11) and `UTC`, because a local-date bug only shows up on one side of the line. Any ES-module
@@ -208,12 +262,13 @@ runtime works: `JSC=$(which node) ./scripts/test.sh` needs `--experimental-vm-mo
 | --- | --- |
 | [js/store.js](js/store.js) | events, fold, union-merge, snapshot + markdown rendering, staging, push |
 | [js/github.js](js/github.js) | contents + Git Data API, atomic multi-file commits, conflict detection |
-| [js/ai.js](js/ai.js) | request negotiation, `proposeOperations`, `sanitiseOperations`, `summarise` |
+| [js/ai.js](js/ai.js) | request negotiation, `proposeOperations`, `summarise`, `writeStandup` + its few-shot examples |
 | [js/providers.js](js/providers.js) | the provider catalogue behind the four tiers |
 | [js/vault.js](js/vault.js) | token storage and the passphrase lock |
 | [js/reminder.js](js/reminder.js) | when the end-of-day nudge is due, as a pure function |
+| [js/standup.js](js/standup.js) | the morning and sign-off reports: built from the log, rendered for a channel |
 | [js/bootstrap.js](js/bootstrap.js) | inspecting a repo and scaffolding a new one |
-| [js/ui/](js/ui/) | board, brain dump, summary, wiki, settings, setup wizard, the cloud-disclosure gate, DOM helpers |
+| [js/ui/](js/ui/) | board, brain dump, summary, standup, wiki, settings, setup wizard, the cloud-disclosure gate, DOM helpers |
 | [js/webllm.js](js/webllm.js) | the in-browser WebGPU path |
 | [js/demo.js](js/demo.js) | the sample board behind `?demo=1`, read through the real Store |
 | [js/rules.js](js/rules.js) | the demo's keyword interpreter: stands in for a model when no provider is set |

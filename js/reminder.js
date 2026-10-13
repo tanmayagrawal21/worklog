@@ -33,12 +33,16 @@ export const formatHHMM = (mins) =>
  * @param {string} o.lastFired     local date it last fired, so it fires once a day
  * @param {boolean} o.hasPending   unpublished changes exist
  * @param {boolean} o.hasEveningSummary  today's evening summary is already written
- * @returns {{due:boolean, reason:'pending'|'summary'|'both'|null, today:string}}
+ * @param {boolean} o.hasSignOff   today's sign-off report has been sent. Defaults to
+ *   true — "I never sent one" is only worth saying to someone who uses the Standup
+ *   pane, and a caller that does not know must not start a new kind of nagging.
+ * @returns {{due:boolean, reason:'pending'|'summary'|'signoff'|'both'|null,
+ *   missing:Array<'summary'|'signoff'>, today:string}}
  */
-export function reminderDue({ at, now = new Date(), lastFired = '', hasPending = false, hasEveningSummary = false }) {
+export function reminderDue({ at, now = new Date(), lastFired = '', hasPending = false, hasEveningSummary = false, hasSignOff = true }) {
   const today = localDate(now.toISOString());
   const target = parseHHMM(at);
-  const off = { due: false, reason: null, today };
+  const off = { due: false, reason: null, missing: [], today };
 
   if (target === null) return off;
   // Once per local day. Opening the app at 21:00 after missing 17:30 still gets it,
@@ -47,10 +51,15 @@ export function reminderDue({ at, now = new Date(), lastFired = '', hasPending =
   if (lastFired === today) return off;
   if (now.getHours() * 60 + now.getMinutes() < target) return off;
 
-  // Nothing to say is not worth saying. A day with everything published and the
-  // evening summary written is a day that went right.
-  if (!hasPending && hasEveningSummary) return off;
+  // Nothing to say is not worth saying. A day with everything published, the evening
+  // summary written and the team told is a day that went right.
+  if (!hasPending && hasEveningSummary && hasSignOff) return off;
 
-  const reason = hasPending && !hasEveningSummary ? 'both' : hasPending ? 'pending' : 'summary';
-  return { due: true, reason, today };
+  // `missing` carries the detail; `reason` stays the coarse label older callers read.
+  const missing = [
+    ...(hasEveningSummary ? [] : ['summary']),
+    ...(hasSignOff ? [] : ['signoff']),
+  ];
+  const reason = hasPending && missing.length ? 'both' : hasPending ? 'pending' : missing[0];
+  return { due: true, reason, missing, today };
 }
