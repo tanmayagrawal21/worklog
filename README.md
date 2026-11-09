@@ -39,6 +39,9 @@ sideways.
 
 <img src="docs/narrow.png" alt="The same board at phone width" width="330">
 
+How the pieces fit together, and the daily flow end to end, is diagrammed in
+[docs/architecture.md](docs/architecture.md).
+
 ## The daily loop
 
 Setup is two things — a repo to keep your log in and a GitHub token so the app can write to it —
