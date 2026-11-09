@@ -7,7 +7,7 @@
  */
 import './shim.js';
 import { check, checkAsync, eq, ok, report } from './shim.js';
-import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise, clampStandup, writeStandup } from '../js/ai.js';
+import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise, clampStandup, writeStandup, proposeOperations, isFormatComplaint } from '../js/ai.js';
 import { foldEvents } from '../js/store.js';
 
 const task = (over = {}) => ({
@@ -322,6 +322,47 @@ await checkAsync('the demo interpreter groups the day without pretending to rewr
     { project: 'AI Verde', lines: ['fixed the buffer size', 'model ids'] },
     { project: 'tests', lines: ['flaky scheduler test'] },
   ]);
+});
+
+console.log('--- strict gateways (Bedrock via LiteLLM) ---');
+
+// Bedrock refuses an enum under a type *array*; it says "Invalid schema", never "response_format".
+const BEDROCK_400 = '{"error":{"message":"litellm.BadRequestError: BedrockException - output_config.format.schema: Invalid schema: Enum value \'backlog\' does not match declared type \'[\\"string\\",\\"null\\"]\'"}}';
+const typeArrayWithEnum = (n) => !!n && typeof n === 'object' && (
+  (Array.isArray(n.type) && Array.isArray(n.enum)) || Object.values(n).some(typeArrayWithEnum));
+
+check('a schema-validation 400 counts as a format complaint', () => {
+  ok(isFormatComplaint(BEDROCK_400), 'must step down to the next format');
+});
+
+await checkAsync('brain dump never sends an enum under a type array, and survives a strict gateway', async () => {
+  const realFetch = globalThis.fetch;
+  const formats = [];
+  globalThis.fetch = async (_url, init) => {
+    const rf = JSON.parse(init.body).response_format;
+    formats.push(rf?.type ?? 'none');
+    if (rf?.type === 'json_schema' && typeArrayWithEnum(rf.json_schema.schema)) {
+      return { ok: false, status: 400, text: async () => BEDROCK_400 };
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"operations":[]}' } }] }) };
+  };
+  try {
+    const endpoint = { kind: 'http', label: 'Custom', baseUrl: 'http://x/v1', model: 'm' };
+    await proposeOperations({ endpoint, tasks: [], text: 'New: start DS-831 eventually.' });
+    eq(formats, ['json_schema'], 'accepted on the first try, no fallback needed');
+
+    // And if a gateway rejects the schema for some other reason, we still degrade.
+    formats.length = 0;
+    globalThis.fetch = async (_u, init) => {
+      const rf = JSON.parse(init.body).response_format;
+      formats.push(rf?.type ?? 'none');
+      return rf?.type === 'json_schema'
+        ? { ok: false, status: 400, text: async () => BEDROCK_400 }
+        : { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"operations":[]}' } }] }) };
+    };
+    await proposeOperations({ endpoint, tasks: [], text: 'New: start DS-831 eventually.' });
+    eq(formats, ['json_schema', 'json_object']);
+  } finally { globalThis.fetch = realFetch; }
 });
 
 quit(report('ai.js'));

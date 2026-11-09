@@ -88,12 +88,13 @@ function explainHttp(status, body, ep) {
 /**
  * True when a 4xx is complaining about `response_format` specifically.
  *
- * Deliberately requires one of the format words to appear. An earlier version also
+ * Deliberately requires one of the format words to appear (a gateway that validates the
+ * schema itself, like Bedrock, says "Invalid schema" rather than naming response_format). An earlier version also
  * matched a bare "unsupported", which made a gateway refusing `temperature` look like
  * a schema complaint -- so the retry dropped the wrong knob three times and then gave
  * up with a misleading message.
  */
-const isFormatComplaint = (body) => /response_format|json_schema|json_object|structured output/i.test(String(body));
+export const isFormatComplaint = (body) => /response_format|json_schema|json_object|structured output|invalid schema|output_config\.format/i.test(String(body));
 
 /**
  * Sampling knobs are a preference, not a requirement. Some gateways pin them: a
@@ -261,6 +262,14 @@ const PRIORITY_ENUM = ['low', 'normal', 'high', 'urgent'];
  * do not reliably support oneOf. A flat, fully-required shape is the portable
  * choice across providers.
  */
+/**
+ * A nullable enum, spelled so strict validators accept it. The compact form
+ * `{ type: ['string', 'null'], enum: [..., null] }` is valid JSON Schema, but Bedrock
+ * (behind LiteLLM) rejects it: "Enum value 'backlog' does not match declared type
+ * '[string, null]'". anyOf keeps each branch single-typed, which everyone accepts.
+ */
+export const nullableEnum = (values) => ({ anyOf: [{ type: 'string', enum: [...values] }, { type: 'null' }] });
+
 const OPERATIONS_SCHEMA = {
   name: 'board_operations',
   schema: {
@@ -278,8 +287,8 @@ const OPERATIONS_SCHEMA = {
             op: { type: 'string', enum: ['create', 'status', 'note', 'edit'] },
             taskId: { type: ['string', 'null'], description: 'Existing task id. Required for status/note/edit; null for create.' },
             title: { type: ['string', 'null'], description: 'Title for create, or a replacement title for edit.' },
-            status: { type: ['string', 'null'], enum: [...STATUS_ENUM, null] },
-            priority: { type: ['string', 'null'], enum: [...PRIORITY_ENUM, null] },
+            status: nullableEnum(STATUS_ENUM),
+            priority: nullableEnum(PRIORITY_ENUM),
             tags: { type: ['array', 'null'], items: { type: 'string' } },
             text: { type: ['string', 'null'], description: 'Note body, for op=note.' },
             rationale: { type: 'string', description: 'One short clause: which words in the update justify this change.' },
