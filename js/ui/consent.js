@@ -15,7 +15,7 @@
  * Nothing here fires for the local tiers or the demo interpreter: no request leaves
  * the machine, so a warning would only teach people to click through warnings.
  */
-import { boardPayload } from '../ai.js';
+import { boardPayload, summaryPayload } from '../ai.js';
 import { el, dialog, notice, plural } from './dom.js';
 
 const STORE_KEY = 'worklog.aiconsent.v1';
@@ -52,16 +52,19 @@ export function forgetConsent() {
  *
  * @param {{endpoint:object, tasks:object[], includeNotes:boolean, text?:string}} o
  */
-export function disclosure({ endpoint, tasks = [], includeNotes = true, text = '' }) {
+export function disclosure({ endpoint, tasks = [], includeNotes = true, text = '', events, kind, today }) {
   const live = tasks.filter((t) => !t.deleted);
-  const payload = boardPayload(live, { includeNotes });
-  const noteCount = payload.reduce((n, t) => n + (t.recentNotes?.length || 0), 0);
+  const summary = events ? summaryPayload({ tasks, events, kind, includeNotes, today }) : null;
+  const payload = summary ? summary.board : boardPayload(live, { includeNotes });
+  const eventNoteCount = summary ? summary.events.filter((e) => e.text).length : 0;
+  const noteCount = payload.reduce((n, t) => n + (t.recentNotes?.length || 0), 0) + eventNoteCount;
 
   return {
     label: endpoint?.label || endpoint?.id || 'the configured provider',
     model: endpoint?.model || '(none set)',
     baseUrl: endpoint?.baseUrl || '',
     taskCount: payload.length,
+    eventCount: summary?.events.length ?? null,
     excludedPrivate: live.filter((t) => t.private).length,
     includeNotes: !!includeNotes,
     noteCount: includeNotes ? noteCount : 0,
@@ -73,10 +76,10 @@ export function disclosure({ endpoint, tasks = [], includeNotes = true, text = '
  * Ask, unless this endpoint has already been agreed to.
  * @returns {Promise<boolean>} false means do not send.
  */
-export async function confirmCloudSend({ endpoint, tasks, includeNotes, text = '' }) {
+export async function confirmCloudSend({ endpoint, tasks, includeNotes, text = '', events, kind, today }) {
   if (!isCloud(endpoint) || hasConsent(endpoint)) return true;
 
-  const d = disclosure({ endpoint, tasks, includeNotes, text });
+  const d = disclosure({ endpoint, tasks, includeNotes, text, events, kind, today });
   const again = el('input', { type: 'checkbox', checked: true });
 
   const body = el('div', {},
@@ -92,8 +95,9 @@ export async function confirmCloudSend({ endpoint, tasks, includeNotes, text = '
     el('ul', {},
       el('li', { text: `${plural(d.taskCount, 'task')} from the board — titles, statuses, tags, priorities.` }),
       el('li', { text: d.includeNotes
-        ? `${plural(d.noteCount, 'note')} of note text (the most recent few per task).`
+        ? `${plural(d.noteCount, 'note')} of note text${d.eventCount === null ? ' (the most recent few per task)' : ' across the board and event history'}.`
         : 'No note text — your "titles only" setting withholds it.' }),
+      d.eventCount !== null ? el('li', { text: `${plural(d.eventCount, 'event')} from the summary window.` }) : null,
       d.excludedPrivate
         ? el('li', {}, el('strong', { text: `${plural(d.excludedPrivate, 'task')} marked private` }), ' — excluded, not sent.')
         : null),

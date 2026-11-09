@@ -456,20 +456,25 @@ export function summaryWindow(events, kind, { today = todayISO(), days = MORNING
   return evs.filter((e) => localDate(e.ts) === today);
 }
 
-/**
- * Generate a summary.
- * @param {'morning'|'evening'} kind morning reports standing state; evening reports what moved.
- */
-export async function summarise({ endpoint, tasks, events, kind = 'evening', previous = null, includeNotes = true, onProgress }) {
-  const today = todayISO();
-  const priv = new Set(tasks.filter((t) => t.private).map((t) => t.id));
-
+/** The board and event window share one eligibility policy, including unknown IDs. */
+export function summaryPayload({ tasks, events, kind = 'evening', includeNotes = true, today = todayISO() }) {
+  const board = boardPayload(tasks, { includeNotes });
+  const allowedIds = new Set(board.map((t) => t.id));
   const window = summaryWindow(events, kind, { today })
-    .filter((e) => !priv.has(e.taskId))
+    .filter((e) => e.type.startsWith('task.') && allowedIds.has(e.taskId))
     .map((e) => ({
       on: localDate(e.ts), at: localTime(e.ts), type: e.type, taskId: e.taskId,
       ...(e.to ? { to: e.to } : {}), ...(includeNotes && e.text ? { text: e.text } : {}),
     }));
+  return { board, events: window };
+}
+
+/**
+ * Generate a summary.
+ * @param {'morning'|'evening'} kind morning reports standing state; evening reports what moved.
+ */
+export async function summarise({ endpoint, tasks, events, kind = 'evening', previous = null, includeNotes = true, today = todayISO(), onProgress }) {
+  const { board, events: window } = summaryPayload({ tasks, events, kind, includeNotes, today });
 
   const focus = kind === 'morning'
     ? 'Report where things STAND at the start of today: what is in flight, what is blocked, what has gone stale. Suggest a focus for today. The events below are from BEFORE today — today has not happened yet, so do not describe it as if it had.'
@@ -491,7 +496,7 @@ export async function summarise({ endpoint, tasks, events, kind = 'evening', pre
     focus,
     '',
     'Board:',
-    JSON.stringify(boardPayload(tasks, { includeNotes }), null, 1),
+    JSON.stringify(board, null, 1),
     '',
     `${label}:`,
     window.length ? JSON.stringify(window, null, 1) : '(none)',

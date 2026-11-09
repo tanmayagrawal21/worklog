@@ -119,6 +119,16 @@ check('an empty board still discloses the destination', () => {
   ok(d.model, 'and a model is named');
 });
 
+check('summary disclosure includes event notes beyond the board note limit', () => {
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const events = Array.from({ length: 5 }, (_, i) => ({ type: 'task.note', taskId: 'T-a', ts: today.toISOString(), text: `event-${i}` }));
+  events.push({ type: 'task.note', taskId: 'T-b', ts: today.toISOString(), text: 'confidential' });
+  const d = disclosure({ endpoint: ep({ provider: 'openai' }), tasks, events, kind: 'evening', includeNotes: true });
+  eq(d.noteCount, 7, 'two board notes plus five approved event notes');
+  eq(disclosure({ tasks, events, kind: 'evening', includeNotes: false }).noteCount, 0);
+});
+
 /* ---- the standing hint ------------------------------------------------- */
 
 check('the inline hint appears only on cloud providers', () => {

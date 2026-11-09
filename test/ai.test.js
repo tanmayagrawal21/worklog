@@ -8,7 +8,7 @@
 import './shim.js';
 import { check, checkAsync, eq, ok, report } from './shim.js';
 import { boardPayload, sanitiseOperations, parseJSONLoose, opsToEvents, summaryEvent, refusedParam, summarise, clampStandup, writeStandup, proposeOperations, isFormatComplaint } from '../js/ai.js';
-import { foldEvents } from '../js/store.js';
+import { Store, makeEvent, foldEvents } from '../js/store.js';
 
 const task = (over = {}) => ({
   id: 'T-aaaaaa', title: 'Fix the parser', status: 'todo', priority: 'normal',
@@ -39,6 +39,52 @@ check('only the newest few notes are sent', () => {
   const [p] = boardPayload([task({ notes })], { noteLimit: 3 });
   eq(p.recentNotes, ['n7', 'n8', 'n9'], 'last three, in order');
 });
+
+// Exercise the real store lifecycle and inspect the HTTP body, without a provider.
+for (const kind of ['evening', 'morning']) {
+  for (const includeNotes of [true, false]) {
+    await checkAsync(`${kind} summary protects deleted private and unknown events (notes=${includeNotes})`, async () => {
+      const store = new Store({ owner: 'test', repo: `privacy-${kind}-${includeNotes}` });
+      store.discardPending();
+      const date = new Date();
+      if (kind === 'morning') date.setDate(date.getDate() - 1);
+      date.setHours(12, 0, 0, 0);
+      const ts = date.toISOString();
+      const event = (type, fields) => makeEvent(type, { ...fields, ts });
+      store.stage(
+        event('task.create', { taskId: 'T-secret', title: 'Secret title', private: true }),
+        event('task.note', { taskId: 'T-secret', text: 'CONFIDENTIAL_MARKER' }),
+        event('task.create', { taskId: 'T-public', title: 'Public work' }),
+        event('task.note', { taskId: 'T-public', text: 'PUBLIC_MARKER' }),
+        event('task.note', { taskId: 'T-unknown', text: 'UNKNOWN_MARKER' }),
+      );
+      const original = globalThis.fetch;
+      const sent = [];
+      globalThis.fetch = async (_url, options) => {
+        sent.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ headline: 'Summary', bullets: [], risks: [], next: [] }) } }] }) };
+      };
+      try {
+        const run = () => summarise({ endpoint: { kind: 'http', baseUrl: 'https://example.invalid/v1', model: 'test' }, tasks: store.tasks, events: store.pending, kind, includeNotes });
+        await run();
+        ok(!JSON.stringify(sent.at(-1)).includes('CONFIDENTIAL_MARKER'), 'live private note withheld');
+        store.stage(event('task.delete', { taskId: 'T-secret' }));
+        ok(store.state.tasks.get('T-secret').private, 'deleted task retains privacy');
+        await run();
+        const prompt = JSON.stringify(sent.at(-1));
+        ok(!prompt.includes('CONFIDENTIAL_MARKER'), 'deleted private note withheld');
+        ok(!prompt.includes('T-secret'), 'deleted private events withheld');
+        ok(!prompt.includes('UNKNOWN_MARKER'), 'unknown task references fail closed');
+        ok(prompt.includes('Public work'), 'public board remains eligible');
+        ok(sent.at(-1).messages[1].content.includes('\"type\": \"task.note\"'), 'public note event remains eligible');
+        eq(prompt.includes('PUBLIC_MARKER'), includeNotes, 'public note toggle respected');
+      } finally {
+        globalThis.fetch = original;
+        store.discardPending();
+      }
+    });
+  }
+}
 
 console.log('--- model output is untrusted ---');
 

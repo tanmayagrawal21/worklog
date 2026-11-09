@@ -151,12 +151,18 @@ export class SummaryView {
     const existing = this.app.state.summaries[today]?.[kind];
     if (existing && !await this.confirmReplace(kind, existing)) return;
 
-    // No free text here, so this only discloses the board payload -- but it is still
-    // the first thing that leaves, and the count of what leaves is worth seeing once.
+    // Snapshot the inputs so consent and generation describe the same payload,
+    // even if the board or local date changes while the dialog is open.
+    const input = {
+      tasks: this.app.tasks,
+      events: this.app.state.events,
+      kind,
+      today,
+      includeNotes: this.app.settings.sendNotes,
+    };
     if (!await confirmCloudSend({
       endpoint,
-      tasks: this.app.tasks,
-      includeNotes: this.app.settings.sendNotes,
+      ...input,
     })) return;
 
     this.busy = kind;
@@ -167,11 +173,8 @@ export class SummaryView {
     try {
       const summary = await summarise({
         endpoint,
-        tasks: this.app.tasks,
-        events: this.app.state.events,
-        kind,
+        ...input,
         previous: this.previousSummary(kind, today),
-        includeNotes: this.app.settings.sendNotes,
         onProgress: ({ text, progress }) => {
           this.progressEl.textContent = `${text}${progress ? ` (${Math.round(progress * 100)}%)` : ''}`;
         },
